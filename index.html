@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="es">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Diario de Estudio</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+
+<body>
+  <a class="skip-link" href="#main-content">Saltar al contenido principal</a>
+
+  <header class="app-header">
+    <h1 class="app-title">Diario de Estudio</h1>
+  </header>
+
+  <!-- Navegación por pestañas: barra inferior fija en móvil, pestañas bajo el título en desktop -->
+  <nav class="app-nav" aria-label="Secciones">
+    <button id="tab-hoy" class="nav-btn active" type="button" data-tab="hoy" aria-selected="true">
+      <span class="nav-icon" aria-hidden="true">📖</span>
+      <span>Hoy</span>
+    </button>
+    <button id="tab-libros" class="nav-btn" type="button" data-tab="libros" aria-selected="false">
+      <span class="nav-icon" aria-hidden="true">📚</span>
+      <span>Libros</span>
+    </button>
+    <button id="tab-ajustes" class="nav-btn" type="button" data-tab="ajustes" aria-selected="false">
+      <span class="nav-icon" aria-hidden="true">⚙️</span>
+      <span>Ajustes</span>
+    </button>
+  </nav>
+
+  <main id="main-content" class="main" tabindex="-1">
+
+    <!-- ===== Pestaña HOY ===== -->
+    <section id="panel-hoy" class="tab-panel" aria-label="Resumen de hoy">
+
+      <div id="carousel" class="carousel" role="region" aria-roledescription="carrusel"
+        aria-label="Estadísticas de estudio" tabindex="0">
+        <div id="carousel-track" class="carousel-track">
+          <article class="stat-card" aria-live="polite" aria-label="Racha actual">
+            <div class="stat-label">Racha actual</div>
+            <div id="streak-current" class="stat-value">0</div>
+            <div class="stat-hint">días seguidos</div>
+          </article>
+          <article class="stat-card" aria-live="polite" aria-label="Racha más larga">
+            <div class="stat-label">Racha más larga</div>
+            <div id="streak-longest" class="stat-value">0</div>
+            <div class="stat-hint">tu mejor marca</div>
+          </article>
+          <article class="stat-card" aria-live="polite" aria-label="Minutos esta semana">
+            <div class="stat-label">Minutos esta semana</div>
+            <div id="week-minutes" class="stat-value">0</div>
+            <div class="stat-hint">de lunes a domingo</div>
+          </article>
+          <article class="stat-card" aria-live="polite" aria-label="Días estudiados">
+            <div class="stat-label">Días estudiados</div>
+            <div id="study-days" class="stat-value">0</div>
+            <div class="stat-hint">en total</div>
+          </article>
+        </div>
+        <div id="carousel-dots" class="carousel-dots" role="tablist" aria-label="Elegir estadística"></div>
+      </div>
+      <p class="carousel-hint">Desliza o mantén pulsado el carrusel para ver más datos.</p>
+
+      <section class="today-section" aria-labelledby="today-title">
+        <h2 id="today-title" class="section-title">Entradas de hoy</h2>
+        <div id="today-list" class="today-list" aria-live="polite"></div>
+        <div id="today-empty" class="empty-state" role="status">
+          <p>Hoy aún no has estudiado.</p>
+          <p>Ve a la pestaña Libros, elige un libro y guarda tu primera entrada del día.</p>
+        </div>
+      </section>
+
+      <section class="week-section" aria-labelledby="week-title">
+        <h2 id="week-title" class="section-title">Esta semana</h2>
+        <div id="week-fire" class="week-fire" role="status" aria-live="polite" hidden>
+          🔥 ¡Semana perfecta!
+        </div>
+        <div id="week-grid" class="week-grid" role="grid" aria-readonly="true"></div>
+        <p class="week-legend">Estudia cada día de lunes a hoy para encender el fuego.</p>
+      </section>
+
+      <section id="heatmap-section" class="heatmap-section" aria-labelledby="heatmap-title">
+        <div class="heatmap-header">
+          <h2 id="heatmap-title" class="section-title">Mapa de calor</h2>
+          <div id="heatmap-years" class="heatmap-years"></div>
+        </div>
+        <p id="heatmap-message" class="heatmap-message" role="status" hidden></p>
+        <div id="heatmap-grid" class="heatmap-grid" role="grid" aria-readonly="true"
+          aria-label="Mapa de calor de días estudiados"></div>
+        <div class="heatmap-footer">
+          <button id="heatmap-more" class="btn btn-secondary btn-small" type="button" hidden>
+            Ver más semanas
+          </button>
+          <div class="heatmap-legend" aria-hidden="true">
+            <span class="legend-label">Menos</span>
+            <span class="legend-sq lvl-1"></span>
+            <span class="legend-sq lvl-2"></span>
+            <span class="legend-sq lvl-3"></span>
+            <span class="legend-sq lvl-4"></span>
+            <span class="legend-sq lvl-5"></span>
+            <span class="legend-label">Más</span>
+          </div>
+        </div>
+        <div id="heatmap-detail" class="heatmap-detail" role="status" aria-live="polite" hidden></div>
+      </section>
+    </section>
+
+    <!-- ===== Pestaña LIBROS ===== -->
+    <section id="panel-libros" class="tab-panel" aria-label="Libros de estudio" hidden>
+
+      <div class="books-manager">
+        <div class="panel-header">
+          <h2 class="section-title">Libros de estudio</h2>
+          <button id="btn-new-book" class="btn btn-primary" type="button">+ Nuevo libro</button>
+        </div>
+
+        <form id="form-book" class="book-form" novalidate aria-label="Formulario para crear o renombrar libro" hidden>
+          <div class="form-row">
+            <label for="book-name" class="form-label">Nombre del libro (máx. 40 caracteres) *</label>
+            <input id="book-name" class="form-input" type="text" maxlength="40" autocomplete="off"
+              aria-required="true" aria-describedby="book-name-error">
+            <p id="book-name-error" class="error-text" aria-live="polite"></p>
+          </div>
+
+          <div class="form-row">
+            <label class="form-label">Color</label>
+            <div id="book-color-palette" class="color-palette" role="radiogroup" aria-label="Seleccionar color del libro">
+              <!-- Colores generados por JS para mantener consistencia -->
+            </div>
+            <p id="book-color-error" class="error-text" aria-live="polite"></p>
+          </div>
+
+          <div class="form-actions">
+            <button id="btn-save-book" class="btn btn-primary" type="submit">Guardar libro</button>
+            <button id="btn-cancel-book" class="btn btn-secondary" type="button">Cancelar</button>
+          </div>
+          <input id="book-id-edit" type="hidden" value="">
+        </form>
+
+        <div id="books-list" class="books-list" role="listbox" aria-label="Lista de libros"></div>
+        <div id="books-empty" class="empty-state" role="status">
+          <p>No hay libros todavía.</p>
+          <p>¡Crea tu primer libro para empezar a escribir entradas!</p>
+          <button id="btn-create-first-book" class="btn btn-primary" type="button">Crear primer libro</button>
+        </div>
+      </div>
+
+      <div id="book-view-empty" class="empty-state" role="status">
+        <p>Selecciona un libro para ver sus entradas.</p>
+      </div>
+
+      <div id="book-view" hidden>
+        <header class="book-view-header">
+          <div class="book-info">
+            <span id="book-color-indicator" class="book-color-dot" aria-hidden="true"></span>
+            <h2 id="book-title-display" class="book-title" tabindex="-1">Nombre del libro</h2>
+            <span id="book-count" class="book-count">0 entradas</span>
+          </div>
+          <div class="book-view-actions">
+            <button id="btn-rename-book" class="btn btn-secondary" type="button">Renombrar</button>
+            <button id="btn-delete-book" class="btn btn-danger" type="button">Eliminar libro</button>
+          </div>
+        </header>
+
+        <section class="entry-form-section" aria-labelledby="entry-form-title">
+          <h3 id="entry-form-title" class="section-title">Nueva entrada</h3>
+          <form id="form-entry" class="entry-form" novalidate aria-label="Formulario para crear o editar entrada">
+            <div class="form-row">
+              <label for="entry-title" class="form-label">Título (obligatorio) *</label>
+              <input id="entry-title" class="form-input" type="text" autocomplete="off" aria-required="true"
+                aria-describedby="entry-title-error">
+              <p id="entry-title-error" class="error-text" aria-live="polite"></p>
+            </div>
+
+            <div class="form-row">
+              <label for="entry-content" class="form-label">Contenido</label>
+              <textarea id="entry-content" class="form-textarea" rows="4" aria-describedby="entry-content-error"></textarea>
+              <p id="entry-content-error" class="error-text" aria-live="polite"></p>
+            </div>
+
+            <div class="form-row">
+              <label for="entry-time" class="form-label">Tiempo de estudio (minutos) *</label>
+              <input id="entry-time" class="form-input" type="number" min="1" step="1" value="25" autocomplete="off"
+                aria-required="true" aria-describedby="entry-time-error">
+              <p id="entry-time-error" class="error-text" aria-live="polite"></p>
+            </div>
+
+            <div class="form-actions">
+              <button id="btn-save-entry" class="btn btn-primary" type="submit">Guardar entrada</button>
+              <button id="btn-cancel-entry" class="btn btn-secondary" type="button">Cancelar</button>
+            </div>
+            <input id="entry-id-edit" type="hidden" value="">
+          </form>
+        </section>
+
+        <section class="entries-section" aria-labelledby="entries-title">
+          <div class="entries-header">
+            <h3 id="entries-title" class="section-title">Entradas</h3>
+            <div class="search-group">
+              <label for="entry-search" class="form-label sr-only">Buscar entradas</label>
+              <input id="entry-search" class="form-input search-input" type="search" placeholder="Buscar por título o contenido..."
+                autocomplete="off" aria-label="Buscar entradas del libro actual por título o contenido">
+              <button id="btn-clear-search" class="btn btn-secondary btn-small" type="button"
+                aria-label="Limpiar búsqueda">Limpiar</button>
+            </div>
+          </div>
+
+          <div id="entries-list" class="entries-list" aria-live="polite" aria-label="Lista de entradas"></div>
+          <div id="entries-empty" class="empty-state" role="status">
+            <p>Aún no hay entradas en este libro.</p>
+            <p>Escribe la primera usando el formulario de arriba.</p>
+          </div>
+          <div id="entries-no-results" class="empty-state" role="status" hidden>
+            <p>No se encontraron entradas con ese criterio de búsqueda.</p>
+          </div>
+        </section>
+      </div>
+    </section>
+
+    <!-- ===== Pestaña AJUSTES ===== -->
+    <section id="panel-ajustes" class="tab-panel" aria-label="Ajustes" hidden>
+      <h2 class="section-title">Tus datos</h2>
+      <p class="settings-text">
+        Los libros y las entradas se guardan únicamente en este navegador (localStorage).
+        Exporta una copia en JSON para hacer una copia de seguridad o moverlos a otro dispositivo.
+      </p>
+      <div class="settings-actions">
+        <button id="btn-export" class="btn btn-primary" type="button">Exportar JSON</button>
+        <label class="btn btn-secondary file-label" for="input-import">
+          Importar JSON
+          <input id="input-import" type="file" accept="application/json,.json" aria-label="Seleccionar archivo JSON para importar">
+        </label>
+      </div>
+      <p class="settings-text">
+        Al importar se reemplazan todos los datos actuales.
+      </p>
+    </section>
+  </main>
+
+  <div id="toast" class="toast" role="status" aria-live="polite" aria-atomic="true" hidden></div>
+
+  <script src="app.js"></script>
+</body>
+
+</html>
