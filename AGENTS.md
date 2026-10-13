@@ -32,8 +32,13 @@ cada uno y una racha de días consecutivos.
 - La pestaña Hoy termina con un mapa de calor de días estudiados
   (spec completa en `specs/001-heat-map/spec.md`): vista «Actual» (12 semanas en
   móvil, 53 en escritorio, botón «Ver más semanas») y selector de años pasados;
-  5 niveles de color por minutos del día; detalle al pulsar un día. Su lógica
+  5 niveles de color por minutos del día; detalle al pulsar un día. Si la
+  cuadrícula no cabe en su sección muestra scroll horizontal en lugar de
+  desbordarla, y las celdas miden 13×13 px o más; la posición del scroll se
+  conserva al redibujar. Su lógica
   pura tiene tests en `tests/` (`node --test`).
+- Desde 1020 px de ancho, la columna de contenido pasa a 960 px y la tipografía y
+  los espaciados se escalan proporcionalmente (tokens en `styles.css`).
 
 ## Racha
 - Un día cuenta si se usa la opcion de "Seguir estudiando este tema" y se guarda la entrada o si se crea una entrada nueva en un libro (en cualquier libro).

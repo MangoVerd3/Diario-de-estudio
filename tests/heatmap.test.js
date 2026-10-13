@@ -134,13 +134,17 @@ test('modeloMapa vista Actual: 12 columnas en móvil y la última contiene hoy (
   assert.deepStrictEqual(m.anios, [2026]);
 });
 
-test('modeloMapa vista Actual: primera semana con días atenuados (ventana rodante, RF-1)', () => {
+test('modeloMapa vista Actual: semanas completas sin atenuados previos al rango (RF-1)', () => {
   const m = modeloMapa([], HOY, { vista: 'actual', anio: null, extra: 0, diaSel: null }, true);
-  // Hoy es jueves: límite = hoy - 77 días = 23 jul; la 1ª columna empieza el lunes 20 jul
+  // RF-1 (enmendada): columnas de semanas completas L–D; la 1ª empieza el lunes 20 jul
   const primera = m.columnas[0];
   assert.strictEqual(primera[0].fecha, '2026-07-20');
-  assert.ok(primera[0].fueraDeRango && primera[1].fueraDeRango && primera[2].fueraDeRango);
-  assert.ok(!primera[3].fueraDeRango); // 23 jul ya entra en el rango
+  for (const d of primera) {
+    assert.ok(!d.fueraDeRango && d.pulsable);
+  }
+  // En la semana en curso solo se atenúan los días futuros (RF-7)
+  const ultima = m.columnas[11];
+  assert.ok(ultima[4].esFuturo && !ultima[4].fueraDeRango && !ultima[4].pulsable);
   assert.ok(!m.hayDatosVisibles); // sin entradas
 });
 

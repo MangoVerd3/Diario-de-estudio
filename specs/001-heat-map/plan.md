@@ -1,14 +1,14 @@
 # Plan de implementación — Spec 001: Mapa de calor
 
-Base: `specs/001-heat-map/spec.md` (RF-1 a RF-11). Respeta `docs/constitution.md`:
+Base: `specs/001-heat-map/spec.md` (RF-1 a RF-10). Respeta `docs/constitution.md`:
 3 archivos de app, lógica pura separada del DOM, sin instalar nada, datos intactos.
 
 ## 1. Archivos y responsabilidades
 
 | Archivo | Acción | Responsabilidad | RF |
 |---|---|---|---|
-| `index.html` | Modificar | Reordenar Hoy (carrusel → Entradas de hoy → tira → mapa). Nueva sección `#heatmap-section`: cabecera con título y selector de año, cuadrícula, botón «Ver más semanas», leyenda, panel de detalle, mensajes de vacío. | RF-1, RF-4, RF-5, RF-6, RF-8, RF-10, RF-11 |
-| `styles.css` | Modificar | Cuadrícula en CSS grid, 5 niveles de color + sin color, atenuados, borde de hoy, leyenda, detalle, selector compacto, breakpoint 768 px, foco visible y `prefers-reduced-motion`. | RF-2, RF-3, RF-5, RF-7, RNF-3, RNF-5 |
+| `index.html` | Modificar | Reordenar Hoy (carrusel → Entradas de hoy → tira → mapa). Nueva sección `#heatmap-section`: cabecera con título y selector de año, cuadrícula, botón «Ver más semanas», leyenda, panel de detalle, mensajes de vacío. | RF-1, RF-4, RF-5, RF-6, RF-8, RF-10 |
+| `styles.css` | Modificar | Cuadrícula en CSS grid, 5 niveles de color + sin color, atenuados, borde de hoy, leyenda, detalle, selector compacto, breakpoint 1020 px, foco visible y `prefers-reduced-motion`. | RF-2, RF-3, RF-5, RF-7, RNF-3, RNF-5 |
 | `app.js` | Modificar | (a) Lógica pura nueva del mapa (sección propia). (b) `mapaState` centralizado. (c) `renderHeatMap()` + listeners (clic, botón, selector, teclado, cambio de ancho). (d) Guard de exportación para tests. | Todos |
 | `tests/heatmap.test.js` | **Crear** | Tests de la lógica pura con `node --test` (runner integrado en Node 24; no instala nada, P4). Requiere permitir `tests/` en AGENTS.md. | Verifica RF-1, RF-2, RF-3, RF-4, RF-5, RF-7 |
 | `AGENTS.md` | Modificar | Permitir carpeta `tests/`; resumir la funcionalidad (P2: spec y código en el mismo paso). | P2 |
@@ -44,8 +44,7 @@ función modeloMapa(entradas, hoy, mapaState, esMovil):
     si mapaState.vista == 'actual':
         N      = rangoVistaActual(esMovil, mapaState.extra)
         fin    = hoy                                   // última columna = semana de hoy
-        limite = hoy - 7*(N-1) días                    // ventana rodante GitHub (53 col = 1 año)
-        esFuera = (fecha) => fecha < limite            // días antes del rango: atenuados
+        esFuera = (fecha) => false                     // sin atenuados previos al rango (RF-1 enmendada)
     si no:                                             // vista de un año pasado
         {N, totalAnio} = rangoVistaAnio(mapaState.anio, esMovil, mapaState.extra)
         fin    = 31-dic del año
@@ -68,9 +67,9 @@ función construirModeloSemanas(dias, hoy, fin, N, esFuera):
 ```
 
 Notas de fechas (skill local-dates): sumas con `setDate`, comparaciones como texto
-`YYYY-MM-DD`, nunca `new Date("...")` ni `toISOString()` para hoy. La ventana
-rodante (vista «Actual») cubre los últimos N×7 días terminando hoy, como GitHub:
-la primera columna puede mostrar días anteriores al rango, atenuados.
+`YYYY-MM-DD`, nunca `new Date("...")` ni `toISOString()` para hoy. La vista
+«Actual» muestra N semanas completas (L–D) terminando en la semana de hoy, como
+GitHub; sin días atenuados previos al rango (RF-1 enmendada el 12 oct 2026).
 
 ## 4. Cómo se pinta en la interfaz
 
@@ -91,11 +90,11 @@ la primera columna puede mostrar días anteriores al rango, atenuados.
   toggle, cambio de pestaña, rotación/redimensionado o si el día sale de vista.
 - **«Ver más semanas»** (RF-4): botón bajo la cuadrícula, visible solo si no se
   llegó al máximo del contexto.
-- **Leyenda** (RF-11): 5 cuadrados de tono entre «Menos» y «Más».
+- **Leyenda** (RF-10): 5 cuadrados de tono entre «Menos» y «Más».
 - **Vacíos** (RF-8): sin entradas → cuadrícula sin color + mensaje invitando a
   estudiar; entradas sin días visibles → «No hay días que mostrar en este periodo».
 - **Recalculo**: `renderHeatMap()` se llama desde `render()` (RF-9) y desde dos
-  listeners: `matchMedia('(min-width: 768px)')` recalcula el rango al cruzar el
+  listeners: `matchMedia('(min-width: 1020px)')` recalcula el rango al cruzar el
   breakpoint (RF-3); `resize` con debounce (~150 ms) cierra el detalle ante
   cualquier rotación o redimensionado (RF-6). Toda transición de estado pasa por
   `transicionMapa` (los listeners solo traducen eventos a acciones).
@@ -116,7 +115,7 @@ la primera columna puede mostrar días anteriores al rango, atenuados.
 4. **Roving tabindex + flechas** (una sola parada Tab). *Descartada*: 371 celdas
    tabulables una a una — inusable con teclado.
 5. **`matchMedia` para el rango + `resize` con debounce para el detalle**:
-   `matchMedia` solo recalcula al cruzar 768 px (RF-3, sin eventos redundantes);
+   `matchMedia` solo recalcula al cruzar 1020 px (RF-3, sin eventos redundantes);
    un listener `resize` aparte solo cierra el detalle (RF-6 exige cerrarlo ante
    cualquier cambio de tamaño, no solo al cruzar el breakpoint). *Descartado*:
    usar solo `resize` con medición manual — mezcla dos responsabilidades y
@@ -160,15 +159,14 @@ en el navegador de pruebas con 2 años de datos generados.
 |---|---|---|---|
 | RF-1 Cuadrícula | `lunesDeYMD`, `construirModeloSemanas` | `#heatmap-grid` | ✔ |
 | RF-2 Niveles | `computeDiasEstudio`, `nivelIntensidad` | clases `lvl-*` | ✔ |
-| RF-3 768 px / recalculo | `rangoVistaActual` | `matchMedia` listener | ✔ (lógica) |
+| RF-3 1020 px / recalculo | `rangoVistaActual` | `matchMedia` listener | ✔ (lógica) |
 | RF-4 Ver más semanas | `rangoVistaActual`, `rangoVistaAnio`, `mapaState.extra` | botón | ✔ |
 | RF-5 Selector de año | `aniosConDatos`, `rangoVistaAnio` | selector | ✔ |
 | RF-6 Detalle | `formatoMinutos`, `transicionMapa` | panel detalle | ✔ (formato y estado) |
 | RF-7 Hoy/futuros | `construirModeloSemanas` | clases `today`/`dimmed` | ✔ |
 | RF-8 Vacíos | `modeloMapa.hayDatosVisibles` | mensajes | navegador* |
 | RF-9 Recalculo | — | llamada desde `render()` | navegador* |
-| RF-10 Orden en Hoy | — | reorden en `index.html` | navegador* |
-| RF-11 Leyenda | — | leyenda | navegador* |
+| RF-10 Leyenda | — | leyenda | navegador* |
 | RNF-1..RNF-6 | diseño sin persistencia | aria, contraste | `console.time` + navegador* |
 
 \* navegador = verificación con Chrome DevTools, previa aprobación del usuario

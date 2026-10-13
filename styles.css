@@ -44,6 +44,9 @@
   --font-size-xl: 1.6rem;
   --font-size-2xl: 2.75rem;
 
+  /* Ancho de la columna de contenido; sube en escritorio ancho */
+  --content-max: 760px;
+
   --nav-height: 64px;
 }
 
@@ -170,7 +173,7 @@ body {
 .main {
   flex: 1;
   width: 100%;
-  max-width: 760px;
+  max-width: var(--content-max);
   margin: 0 auto;
   padding: var(--space-sm) var(--space-md);
   /* Espacio para la barra inferior en móvil */
@@ -909,12 +912,46 @@ body {
   grid-auto-flow: column;
   grid-auto-columns: 1fr;
   gap: 3px;
+  /* La barra aparece solo si la cuadrícula no cabe: así nunca se sale de la
+     sección y las celdas no bajan de su tamaño mínimo (ver .heat-cell) */
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  /* Aire para que los outline de hoy/selección/foco no se corten en los bordes */
+  padding: 3px;
+  /* Barra fina y discreta sobre el papel */
+  scrollbar-width: thin;
+  scrollbar-color: var(--muted) transparent;
+}
+
+.heatmap-grid::-webkit-scrollbar {
+  height: 8px;
+}
+
+.heatmap-grid::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.heatmap-grid::-webkit-scrollbar-thumb {
+  background: var(--line);
+  border-radius: 4px;
+}
+
+.heatmap-grid::-webkit-scrollbar-thumb:hover {
+  background: var(--muted);
+}
+
+/* Sin flechas ni esquina: la barra es solo un indicador de posición */
+.heatmap-grid::-webkit-scrollbar-button,
+.heatmap-grid::-webkit-scrollbar-corner {
+  display: none;
+  background: transparent;
 }
 
 .heat-cell {
   aspect-ratio: 1;
   width: 100%;
-  min-width: 8px;
+  min-width: 13px;
+  min-height: 13px;
   padding: 0;
   border: 1px solid var(--line);
   border-radius: 2px;
@@ -1048,7 +1085,7 @@ body {
     border-top: none;
     border-bottom: 1px solid var(--line);
     background: transparent;
-    max-width: 760px;
+    max-width: var(--content-max);
     margin: 0 auto;
     width: 100%;
     padding-bottom: 0;
@@ -1078,6 +1115,17 @@ body {
 
   .toast {
     bottom: var(--space-lg);
+  }
+}
+
+/* ===== Escritorio ancho: columna más ancha y tipografía proporcionada ===== */
+/* Mismo corte que el mapa de calor (53 semanas): a partir de aquí sobra sitio */
+@media (min-width: 1020px) {
+  :root {
+    --content-max: 960px;
+    /* Escala proporcional al crecimiento de la columna (760 → 960 px):
+       al subir el rem raíz escalan a la vez tipografía, espaciados y radios */
+    font-size: 126%;
   }
 }
 

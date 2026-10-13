@@ -380,9 +380,9 @@ function modeloMapa(entradas, hoy, mapaState, esMovil) {
   } else {
     const n = rangoVistaActual(esMovil, mapaState.extra);
     totalDisponible = 53;
-    // Ventana rodante estilo GitHub: desde hoy menos N-1 semanas (para 53 = 1 año)
-    const limite = addDaysYMD(hoy, -7 * (n - 1));
-    columnas = construirModeloSemanas(dias, hoy, hoy, n, (fecha) => fecha < limite);
+    // RF-1: columnas de semanas completas (L–D) terminando en la semana en
+    // curso; solo se atenúan los días futuros (RF-7)
+    columnas = construirModeloSemanas(dias, hoy, hoy, n, () => false);
   }
   let hayDatosVisibles = false;
   for (const col of columnas) {
@@ -769,7 +769,7 @@ function renderTodayEntries() {
 let mapaState = { vista: 'actual', anio: null, extra: 0, diaSel: null };
 let mapaModelo = null;   // último modelo calculado (teclado y detalle)
 let mapaFoco = null;     // fecha de la celda enfocable (roving tabindex, RNF-3)
-let mqHeatmap = null;    // media query 768px; se crea en init (solo navegador)
+let mqHeatmap = null;    // media query 1020px; se crea en init (solo navegador)
 
 function esMovilHeatmap() {
   return mqHeatmap ? !mqHeatmap.matches : true;
@@ -802,6 +802,12 @@ function focoInicialHeatmap(plano, hoy) {
 // Selector de año: <select> en móvil, botones en escritorio (RF-5)
 function renderHeatmapYears(anios, hoy) {
   const cont = document.getElementById('heatmap-years');
+  // Los botones se recrean en cada render: conservar el foco del teclado
+  const btnActivo = document.activeElement
+    && document.activeElement.classList
+    && document.activeElement.classList.contains('year-btn')
+    ? document.activeElement.textContent
+    : null;
   cont.innerHTML = '';
   const anioActual = parseInt(hoy.slice(0, 4), 10);
   const pasados = anios.filter(a => a < anioActual); // el año en curso solo con «Actual»
@@ -849,10 +855,26 @@ function renderHeatmapYears(anios, hoy) {
       cont.appendChild(btn);
     }
   }
+
+  // Devolver el foco al botón de año equivalente tras el redibujado
+  if (btnActivo) {
+    const btn = Array.from(cont.querySelectorAll('.year-btn'))
+      .find(b => b.textContent === btnActivo);
+    if (btn) btn.focus();
+  }
 }
 
 function renderHeatmapGrid(modelo, hoy) {
   const grid = document.getElementById('heatmap-grid');
+  // El redibujado recrea las celdas: sin guardar el foco caería al <body> y el
+  // teclado dejaría de funcionar tras cualquier recálculo (RNF-3)
+  const celdaActiva = document.activeElement
+    && document.activeElement.classList
+    && document.activeElement.classList.contains('heat-cell')
+    ? document.activeElement.dataset.fecha
+    : null;
+  // Con scroll horizontal, el redibujado reiniciaría la posición: guardarla
+  const scrollIzq = grid.scrollLeft;
   grid.innerHTML = '';
   const plano = modelo.columnas.flat();
   // Foco de aterrizaje si el actual ya no es válido
@@ -874,6 +896,19 @@ function renderHeatmapGrid(modelo, hoy) {
     if (!d.pulsable) cell.setAttribute('aria-disabled', 'true');
     grid.appendChild(cell);
   }
+  // Devolver el foco a la misma celda (o a la de aterrizaje si salió del rango)
+  // sin arrastrar el scroll: enfocar con scroll rompería la posición del usuario
+  if (celdaActiva) {
+    const destino = plano.find(d => d.fecha === celdaActiva && d.pulsable)
+      || plano.find(d => d.fecha === mapaFoco && d.pulsable);
+    if (destino) {
+      const cell = grid.querySelector(`.heat-cell[data-fecha="${destino.fecha}"]`);
+      if (cell) cell.focus({ preventScroll: true });
+    }
+  }
+  // Reconstruir las celdas reinicia el scroll horizontal: devolver la posición
+  // (ampliar la semana la cambia a propósito en ampliarHeatmap)
+  grid.scrollLeft = scrollIzq;
 }
 
 function renderHeatmapDetail() {
@@ -945,6 +980,10 @@ function ampliarHeatmap() {
   const maxExtra = Math.max(0, mapaModelo.totalDisponible - base);
   mapaState = transicionMapa(mapaState, { tipo: 'AMPLIAR' }, { maxExtra });
   renderHeatMap();
+  // Las semanas nuevas se añaden a la izquierda: llevar el scroll al final
+  // mantiene «hoy» a la vista (solo si el grid no cabe y hay scroll)
+  const grid = document.getElementById('heatmap-grid');
+  if (grid.scrollWidth > grid.clientWidth) grid.scrollLeft = grid.scrollWidth;
 }
 
 // Navegación por flechas dentro del mapa (patrón grid, RNF-3)
@@ -957,11 +996,15 @@ function moverFocoHeatmap(fechaActual, delta) {
   mapaFoco = pulsables[j].fecha;
   renderHeatMap();
   const cell = document.querySelector(`.heat-cell[data-fecha="${mapaFoco}"]`);
-  if (cell) cell.focus();
+  if (cell) {
+    cell.focus();
+    // Con scroll horizontal, el foco no siempre trae la celda a la vista
+    cell.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  }
 }
 
 function setupHeatmapListeners() {
-  mqHeatmap = window.matchMedia('(min-width: 768px)');
+  mqHeatmap = window.matchMedia('(min-width: 1020px)');
   // Recalcular el rango al cruzar el breakpoint (RF-3)
   mqHeatmap.addEventListener('change', () => {
     mapaState = transicionMapa(mapaState, { tipo: 'CAMBIO_TAMANO' }, {});
