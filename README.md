@@ -2,7 +2,7 @@
 
 Registra tus sesiones de estudio y visualiza tu constancia: rachas, estadísticas y un mapa de calor de tus días estudiados. Funciona en el navegador, sin cuentas ni servidores.
 
-![Vista general del Diario de Estudio](docs/img/vista-general.png)
+<p align="center"> <img src="docs/img/vista-general.png" alt="Vista general del Diario de Estudio" width="500"> </p>
 
 ## ✨ Características
 
