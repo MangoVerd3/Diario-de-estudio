@@ -59,6 +59,18 @@
             <div id="study-days" class="stat-value">0</div>
             <div class="stat-hint">en total</div>
           </article>
+
+          <article class="stat-card" aria-live="polite" aria-label="Metas semanales">
+            <div class="stat-label">Metas semanales</div>
+            <div id="metas-card" class="stat-value stat-value-compact">0 · racha 0 · récord 0</div>
+            <div class="stat-hint">semanas cumplidas</div>
+          </article>
+
+          <article class="stat-card" aria-live="polite" aria-label="Semanas perfectas">
+            <div class="stat-label">Semanas perfectas</div>
+            <div id="perfectas-card" class="stat-value stat-value-compact">0 · racha 0 · récord 0</div>
+            <div class="stat-hint">semanas perfectas</div>
+          </article>
         </div>
         <div id="carousel-dots" class="carousel-dots" role="tablist" aria-label="Elegir estadística"></div>
       </div>
@@ -75,11 +87,9 @@
 
       <section class="week-section" aria-labelledby="week-title">
         <h2 id="week-title" class="section-title">Esta semana</h2>
-        <div id="week-fire" class="week-fire" role="status" aria-live="polite" hidden>
-          🔥 ¡Semana perfecta!
-        </div>
+        <div id="week-fire" class="week-fire" role="status" aria-live="polite" hidden></div>
         <div id="week-grid" class="week-grid" role="grid" aria-readonly="true"></div>
-        <p class="week-legend">Estudia cada día de lunes a hoy para encender el fuego.</p>
+        <p id="week-guide" class="week-legend"></p>
       </section>
 
       <section id="heatmap-section" class="heatmap-section" aria-labelledby="heatmap-title">
@@ -222,6 +232,22 @@
 
     <!-- ===== Pestaña AJUSTES ===== -->
     <section id="panel-ajustes" class="tab-panel" aria-label="Ajustes" hidden>
+      <section class="settings-block" aria-labelledby="meta-title">
+        <h3 id="meta-title" class="section-title">Meta semanal</h3>
+        <div class="settings-meta">
+          <label for="meta-select" class="form-label">Días que quiero estudiar cada semana</label>
+          <select id="meta-select" class="form-input">
+            <option value="1">1 día</option>
+            <option value="2">2 días</option>
+            <option value="3">3 días</option>
+            <option value="4">4 días</option>
+            <option value="5">5 días</option>
+            <option value="6">6 días</option>
+            <option value="7">7 días</option>
+          </select>
+          <p id="meta-aviso" class="settings-text" hidden>Se aplicará desde el lunes</p>
+        </div>
+      </section>
       <h2 class="section-title">Tus datos</h2>
       <p class="settings-text">
         Los libros y las entradas se guardan únicamente en este navegador (localStorage).

@@ -18,6 +18,7 @@ const BOOK_COLORS = [
 let state = {
   libros: [],      // [{ id, nombre, color, creadoEn }]
   entradas: [],    // [{ id, libroId, titulo, contenido, fecha, creadoEn, minutos, sesiones }]
+  metas: [],       // [{ dias, desde }] historial de metas semanales (spec 002)
   selectedBookId: null,
   editingBookId: null,
   editingEntryId: null,
@@ -117,13 +118,286 @@ function getFechasEstudiadas(entradas) {
   return dateSet;
 }
 
+// --- METAS SEMANALES (spec 002) ---
+// Historial de metas: [{ dias: 1..7, desde: 'YYYY-MM-DD' }], donde 'desde' es el
+// lunes desde el que rige cada cambio (RF-1). Sin historial la meta vigente es 3
+// (RF-2, se aplica al evaluar cada semana).
+const META_POR_DEFECTO = 3;
+
+// Fecha del último render: si el día cambia con la app abierta hay que recalcular
+// (RNF-1, RF-5)
+let fechaRender = null;
+
+// Historial válido y ordenado por 'desde'. Ante datos antiguos o corruptos se
+// normaliza y nunca se pierde lo guardado (P5, RNF-2): se descartan las metas
+// inválidas y un 'desde' desplazado se ajusta al lunes de esa misma semana.
+function normalizarMetas(valor) {
+  if (!Array.isArray(valor)) return [];
+  const metas = [];
+  for (const m of valor) {
+    if (!m || typeof m !== 'object') continue;
+    const dias = m.dias;
+    if (typeof dias !== 'number' || !Number.isInteger(dias) || dias < 1 || dias > 7) continue;
+    if (typeof m.desde !== 'string' || !parseYMD(m.desde)) continue;
+    metas.push({ dias, desde: lunesDeYMD(m.desde) });
+  }
+  // Orden cronológico; si dos comparten 'desde' se mantiene el orden recibido
+  return metas.sort((a, b) => (a.desde < b.desde ? -1 : a.desde > b.desde ? 1 : 0));
+}
+
+// Días con minutos totales > 0, ordenados: el «día estudiado» de la spec 002
+// (glosario y RF-3). Varias entradas el mismo día siguen siendo un solo día.
+function diasConMinutos(dias) {
+  return Object.keys(dias).filter(fecha => dias[fecha].minutos > 0).sort();
+}
+
+// Días estudiados de una semana de lunes a domingo (RF-3)
+function diasEstudiadosSemana(fechas, lunes) {
+  const domingo = addDaysYMD(lunes, 6);
+  let estudiados = 0;
+  for (const fecha of fechas) {
+    if (fecha >= lunes && fecha <= domingo) estudiados++;
+  }
+  return estudiados;
+}
+
+// Semanas a evaluar: del lunes del primer día estudiado al lunes de la última
+// semana cerrada (la anterior a la de hoy). Es equivalente a arrancar en la primera
+// entrada: las semanas previas tienen 0 días estudiados y no alteran ningún
+// resultado. La semana en curso nunca se evalúa (RF-9).
+function semanasAEvaluar(fechas, hoy) {
+  if (fechas.length === 0) return [];
+  const lunesInicio = lunesDeYMD(fechas[0]);
+  const lunesFin = addDaysYMD(lunesDeYMD(hoy), -7);
+  if (lunesFin < lunesInicio) return [];
+  const semanas = [];
+  for (let lunes = lunesInicio; lunes <= lunesFin; lunes = addDaysYMD(lunes, 7)) {
+    semanas.push(lunes);
+  }
+  return semanas;
+}
+
+// Evaluación de cada semana cerrada con la meta que regía en ella (RF-2, RF-9)
+function resumenSemanas(fechas, metas, hoy) {
+  return semanasAEvaluar(fechas, hoy).map(lunes => {
+    const diasEstudiados = diasEstudiadosSemana(fechas, lunes);
+    const meta = metaVigenteDe(metas, lunes);
+    return {
+      lunes,
+      meta,
+      diasEstudiados,
+      cumplida: diasEstudiados >= meta,
+      perfecta: diasEstudiados === 7
+    };
+  });
+}
+
+// Racha (tanda de semanas que termina en la última cerrada, 0 si esa no cuenta) y
+// récord histórico de ese mismo tipo (RF-9). 'tipo': 'cumplida' | 'perfecta'.
+function rachasDeSemanas(semanas, tipo) {
+  let racha = 0;
+  let record = 0;
+  for (const semana of semanas) {
+    if (semana[tipo]) {
+      racha++;
+      if (racha > record) record = racha;
+    } else {
+      if (racha > record) record = racha;
+      racha = 0;
+    }
+  }
+  if (racha > record) record = racha;
+  return { racha, record };
+}
+
+// Días que aún se pueden estudiar esta semana: de hoy al domingo, contando hoy solo
+// si no está estudiado (RF-8).
+function diasPosiblesSemana(fechas, hoy) {
+  const domingo = addDaysYMD(lunesDeYMD(hoy), 6);
+  let posibles = 0;
+  for (let fecha = hoy; fecha <= domingo; fecha = addDaysYMD(fecha, 1)) {
+    if (!fechas.includes(fecha)) posibles++;
+  }
+  return posibles;
+}
+
+// Concordancia de los textos de la guía (RF-8): «1 día», «2 días»
+function textoMetaDias(n) {
+  return `${n} ${n === 1 ? 'día' : 'días'}`;
+}
+
+function textoFaltanDias(n) {
+  return n === 1 ? 'te falta 1 día' : `te faltan ${n} días`;
+}
+
+// Texto de la tarjeta del carrusel: total, racha actual y récord (RF-10)
+function textoTarjetaRacha(total, racha, record) {
+  return `${total} · racha ${racha} · récord ${record}`;
+}
+
+// Texto de guía bajo la tira: los seis casos del RF-8, evaluados en ese orden
+function textoGuiaMeta(datos) {
+  const { meta, estudiados, diasPosibles, perfectaPosible, hayEntradasAnteriores, perfectaHoy } = datos;
+  if (perfectaHoy) return '¡Completaste una semana perfecta!';
+  if (estudiados === 0 && hayEntradasAnteriores) {
+    return `Esta semana aún no has estudiado: tu meta es de ${textoMetaDias(meta)}.`;
+  }
+  if (estudiados < meta) {
+    if (estudiados + diasPosibles >= meta) {
+      return `Tu meta semanal es de ${textoMetaDias(meta)}, ${textoFaltanDias(meta - estudiados)}.`;
+    }
+    return 'Recuerda estudiar todas las semanas';
+  }
+  if (perfectaPosible) {
+    return 'Meta semanal alcanzada, ¡esta semana puedes conseguir una semana perfecta!';
+  }
+  return `Meta alcanzada${diasPosibles > 0 ? ', ¿vamos a estudiar más?' : ''}`;
+}
+
+// Fecha del día estudiado nº N de la semana (N = meta vigente); null si todavía no
+// se alcanza (RF-4). Cuenta la fecha de las sesiones, no cuándo se registraron.
+function fechaLogroMeta(fechas, metas, lunes) {
+  const meta = metaVigenteDe(metas, lunes);
+  const deLaSemana = fechas.filter(fecha => fecha >= lunes && fecha <= addDaysYMD(lunes, 6));
+  if (deLaSemana.length < meta) return null;
+  return deLaSemana[meta - 1];
+}
+
+// Semana perfecta completada hoy: hoy es domingo y los 7 días están estudiados (RF-5)
+function esPerfectaHoy(fechas, hoy) {
+  const lunes = lunesDeYMD(hoy);
+  if (hoy !== addDaysYMD(lunes, 6)) return false;
+  return diasEstudiadosSemana(fechas, lunes) === 7;
+}
+
+// Fuego del día con la prioridad de RF-7: perfecta, meta y racha (RF-4, RF-5, RF-6)
+function estadoFuegoHoy(fechas, metas, hoy, rachaMetas) {
+  if (esPerfectaHoy(fechas, hoy)) {
+    return { tipo: 'perfecta', texto: '🔥 ¡Semana perfecta!' };
+  }
+  if (fechaLogroMeta(fechas, metas, lunesDeYMD(hoy)) === hoy) {
+    return { tipo: 'meta', texto: '🔥 ¡Meta semanal alcanzada!' };
+  }
+  if (rachaMetas > 0) {
+    return { tipo: 'racha', texto: '🔥 Racha de metas semanales activa' };
+  }
+  return { tipo: null, texto: '' };
+}
+
+// ¿Cabe todavía una semana perfecta? Ningún día anterior a hoy sin estudiar
+// (RF-8, caso 5).
+function perfectaPosibleSemana(fechas, hoy) {
+  for (let fecha = lunesDeYMD(hoy); fecha < hoy; fecha = addDaysYMD(fecha, 1)) {
+    if (!fechas.includes(fecha)) return false;
+  }
+  return true;
+}
+
+// ¿Hay entradas en semanas anteriores a la de hoy? (RF-8, caso 2). Cuentan todas las
+// sesiones, incluso las de 0 minutos: el caso habla de entradas, no de días.
+function hayEntradasAnteriores(entradas, lunes) {
+  for (const e of entradas) {
+    for (const s of getSesiones(e)) {
+      if (s && typeof s.fecha === 'string' && s.fecha < lunes) return true;
+    }
+  }
+  return false;
+}
+
+// Resumen semanal (RNF-1): una sola pasada sobre las entradas alimenta la tira, la
+// guía, los fuegos y las tarjetas del carrusel.
+function resumenMetas(entradas, metas, hoy) {
+  const dias = computeDiasEstudio(entradas, hoy);
+  const fechas = diasConMinutos(dias);
+  const historial = Array.isArray(metas) ? metas : [];
+  const lunes = lunesDeYMD(hoy);
+  const semanas = resumenSemanas(fechas, historial, hoy);
+  const rachaMetas = rachasDeSemanas(semanas, 'cumplida');
+  const rachaPerfectas = rachasDeSemanas(semanas, 'perfecta');
+  const estudiados = diasEstudiadosSemana(fechas, lunes);
+  const meta = metaVigenteDe(historial, lunes);
+  const diasPosibles = diasPosiblesSemana(fechas, hoy);
+  const perfectaPosible = perfectaPosibleSemana(fechas, hoy);
+  const hayAnteriores = hayEntradasAnteriores(entradas, lunes);
+  const perfectaHoy = esPerfectaHoy(fechas, hoy);
+  return {
+    lunes,
+    meta,
+    estudiados,
+    metaCumplida: estudiados >= meta,
+    perfectaPosible,
+    hayEntradasAnteriores: hayAnteriores,
+    perfectaHoy,
+    fechaLogroMeta: fechaLogroMeta(fechas, historial, lunes),
+    fuego: estadoFuegoHoy(fechas, historial, hoy, rachaMetas.racha),
+    guia: textoGuiaMeta({
+      meta,
+      estudiados,
+      diasPosibles,
+      perfectaPosible,
+      hayEntradasAnteriores: hayAnteriores,
+      perfectaHoy
+    }),
+    totalMetas: semanas.filter(s => s.cumplida).length,
+    rachaMetas: rachaMetas.racha,
+    recordMetas: rachaMetas.record,
+    totalPerfectas: semanas.filter(s => s.perfecta).length,
+    rachaPerfectas: rachaPerfectas.racha,
+    recordPerfectas: rachaPerfectas.record,
+    diasPosibles
+  };
+}
+
+// Meta vigente de una semana: el último cambio cuyo 'desde' sea igual o anterior al
+// lunes de esa semana, o 3 si no hay ninguno (RF-2). Nunca reevalúa semanas vividas.
+function metaVigenteDe(metas, lunes) {
+  let vigente = null;
+  for (const m of metas) {
+    if (m.desde <= lunes) vigente = m;
+  }
+  return vigente ? vigente.dias : META_POR_DEFECTO;
+}
+
+// Regla de vigencia al elegir meta (RF-1, RF-2): la primera meta configurada rige
+// desde el lunes de la semana en curso —aunque coincida con los 3 días por defecto,
+// para que los cambios siguientes se apliquen desde el lunes siguiente—; cada cambio
+// posterior rige desde el lunes siguiente y sustituye al pendiente sin sustituir a la
+// meta ya vigente. Volver a la meta vigente solo deshace el cambio pendiente.
+function guardarMetaSemanal(metas, dias, hoy) {
+  const lunesHoy = lunesDeYMD(hoy);
+  const vigentes = metas.filter(m => m.desde <= hoy);
+  if (vigentes.length === 0) return [{ dias, desde: lunesHoy }];
+  if (dias === metaVigenteDe(vigentes, lunesHoy)) return vigentes;
+  return [...vigentes, { dias, desde: addDaysYMD(lunesHoy, 7) }];
+}
+
+// Cambio registrado que aún no rige ('desde' en el futuro). Con varios —solo posible
+// con datos importados— manda el último.
+function metaPendiente(metas, hoy) {
+  let pendiente = null;
+  for (const m of metas) {
+    if (m.desde > hoy) pendiente = m;
+  }
+  return pendiente;
+}
+
+// Lo que muestra Ajustes: la meta elegida (la pendiente si la hay) y el aviso de
+// cuándo se aplicará (RF-1).
+function metaSemanaActual(metas, hoy) {
+  const pendiente = metaPendiente(metas, hoy);
+  return {
+    dias: pendiente ? pendiente.dias : metaVigenteDe(metas, lunesDeYMD(hoy)),
+    aviso: pendiente ? 'Se aplicará desde el lunes' : null
+  };
+}
+
 // --- PERSISTENCIA ---
 const STORAGE_KEY = 'diarioEstudio';
 
 function loadState() {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return { libros: [], entradas: [] };
+    if (!raw) return { libros: [], entradas: [], metas: [] };
     const parsed = JSON.parse(raw);
     if (!parsed || typeof parsed !== 'object') {
       throw new Error('Datos no válidos');
@@ -135,10 +409,12 @@ function loadState() {
     const entradasValidas = entradas
       .filter(e => e && typeof e.id === 'string' && typeof e.libroId === 'string' && typeof e.titulo === 'string' && typeof e.fecha === 'string' && typeof e.creadoEn === 'number')
       .map(e => normalizarEntrada(e));
-    return { libros: librosValidos, entradas: entradasValidas };
+    // El historial de metas es opcional (datos antiguos, RNF-2): se normaliza
+    // sin perder nada de lo ya guardado (P5).
+    return { libros: librosValidos, entradas: entradasValidas, metas: normalizarMetas(parsed.metas) };
   } catch (err) {
     console.warn('Error al cargar datos de localStorage:', err);
-    return { libros: [], entradas: [] };
+    return { libros: [], entradas: [], metas: [] };
   }
 }
 
@@ -146,7 +422,8 @@ function saveState() {
   try {
     const payload = {
       libros: state.libros,
-      entradas: state.entradas
+      entradas: state.entradas,
+      metas: state.metas
     };
     localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
   } catch (err) {
@@ -158,6 +435,8 @@ function saveState() {
 // Validar estructura al importar
 function validateImportedData(obj) {
   if (!obj || typeof obj !== 'object') return false;
+  // 'metas' no se valida aquí: puede faltar (datos antiguos) o venir corrupto y el
+  // archivo sigue siendo importable; se normaliza al importar (RNF-2, P5).
   if (!Array.isArray(obj.libros)) return false;
   if (!Array.isArray(obj.entradas)) return false;
   const libroOk = obj.libros.every(l => l && typeof l.id === 'string' && typeof l.nombre === 'string' && typeof l.color === 'string' && typeof l.creadoEn === 'number');
@@ -641,7 +920,8 @@ function renderEntries() {
 }
 
 // Valores de las tarjetas del carrusel
-function renderStats() {
+// 'resumen' es el resumen de metas semanales (spec 002): lo calcula render() una vez.
+function renderStats(resumen) {
   const res = computeStreak(state.entradas);
   document.getElementById('streak-current').textContent = String(res.current);
   document.getElementById('streak-longest').textContent = String(res.longest);
@@ -655,11 +935,30 @@ function renderStats() {
   }
   document.getElementById('week-minutes').textContent = weekText;
   document.getElementById('study-days').textContent = String(computeStudyDays(state.entradas));
+
+  // Tarjetas de metas y semanas perfectas (RF-10)
+  if (resumen) {
+    document.getElementById('metas-card').textContent =
+      textoTarjetaRacha(resumen.totalMetas, resumen.rachaMetas, resumen.recordMetas);
+    document.getElementById('perfectas-card').textContent =
+      textoTarjetaRacha(resumen.totalPerfectas, resumen.rachaPerfectas, resumen.recordPerfectas);
+  }
 }
 
-// Tira de la semana actual (lunes a domingo) + fuego de semana perfecta.
-// Fuego: todos los días de lunes a hoy tienen al menos una sesión.
-function renderWeekStrip() {
+// Meta semanal elegida en Ajustes: valor del selector y aviso de vigencia (RF-1)
+function renderAjustes() {
+  const select = document.getElementById('meta-select');
+  if (!select) return;
+  const { dias, aviso } = metaSemanaActual(state.metas, getTodayLocalYMD());
+  select.value = String(dias);
+  const avisoEl = document.getElementById('meta-aviso');
+  avisoEl.textContent = aviso || '';
+  avisoEl.hidden = !aviso;
+}
+
+// Tira de la semana actual (lunes a domingo) + fuego y texto de guía de la meta.
+// 'resumen' es el resumen de metas semanales (spec 002): lo calcula render() una vez.
+function renderWeekStrip(resumen) {
   const gridEl = document.getElementById('week-grid');
   gridEl.innerHTML = '';
 
@@ -671,14 +970,12 @@ function renderWeekStrip() {
   const dateSet = getFechasEstudiadas(state.entradas);
   const nombres = ['L', 'M', 'X', 'J', 'V', 'S', 'D'];
 
-  let semanaPerfecta = true;
   for (let i = 0; i < 7; i++) {
     const fecha = addDaysYMD(lunes, i);
     const dateObj = parseYMD(fecha);
     const esFuturo = fecha > today;
     const esHoy = fecha === today;
     const marcado = dateSet.has(fecha);
-    if (!esFuturo && !marcado) semanaPerfecta = false;
 
     const cell = document.createElement('div');
     cell.className = 'week-day' + (marcado ? ' marked' : '') + (esHoy ? ' today' : '') + (esFuturo ? ' future' : '');
@@ -698,7 +995,16 @@ function renderWeekStrip() {
     gridEl.appendChild(cell);
   }
 
-  document.getElementById('week-fire').hidden = !semanaPerfecta;
+  // Fuego único de la meta semanal (RF-4 a RF-7): un solo elemento y el texto del
+  // reconocimiento que toque hoy, o nada.
+  const fuego = document.getElementById('week-fire');
+  const estado = resumen && resumen.fuego ? resumen.fuego : { tipo: null, texto: '' };
+  fuego.textContent = estado.texto;
+  fuego.hidden = estado.tipo === null;
+
+  // Texto de guía sobre la meta, bajo la tira (RF-8)
+  const guia = document.getElementById('week-guide');
+  if (guia) guia.textContent = resumen && resumen.guia ? resumen.guia : '';
 }
 
 // Entradas con sesión de hoy (cualquier libro); clic lleva al libro
@@ -1048,10 +1354,16 @@ function setupHeatmapListeners() {
 
 // Función central: redibuja toda la interfaz a partir del estado
 function render() {
+  // Resumen semanal calculado una sola vez (spec 002, RNF-1)
+  const resumen = resumenMetas(state.entradas, state.metas, getTodayLocalYMD());
+  // Fecha usada en este render: si cambia el día con la app abierta, hay que
+  // recalcular (RNF-1)
+  fechaRender = getTodayLocalYMD();
   renderBooksList();
   renderBookView();
-  renderStats();
-  renderWeekStrip();
+  renderStats(resumen);
+  renderAjustes();
+  renderWeekStrip(resumen);
   renderTodayEntries();
   renderHeatMap();
 }
@@ -1076,8 +1388,8 @@ function switchTab(tab) {
 // --- CARRUSEL DE ESTADÍSTICAS ---
 // Swipe (táctil/ratón), pulsación sostenida para avance automático,
 // puntos indicadores y flechas de teclado.
-const CAROUSEL_COUNT = 4;
-const CAROUSEL_LABELS = ['Racha actual', 'Racha más larga', 'Minutos esta semana', 'Días estudiados'];
+const CAROUSEL_COUNT = 6;
+const CAROUSEL_LABELS = ['Racha actual', 'Racha más larga', 'Minutos esta semana', 'Días estudiados', 'Metas semanales', 'Semanas perfectas'];
 let carouselIndex = 0;
 let pressTimer = null;
 let autoTimer = null;
@@ -1287,6 +1599,18 @@ function setupEventListeners() {
   document.getElementById('btn-new-book').addEventListener('click', startNewBook);
   document.getElementById('btn-create-first-book').addEventListener('click', startNewBook);
 
+  // Recalcular al cambiar de semana con la app abierta (RNF-1, RF-5): el intervalo
+  // cubre el uso normal y 'visibilitychange'/'focus' el caso de la pestaña suspendida
+  setInterval(() => {
+    if (getTodayLocalYMD() !== fechaRender) render();
+  }, 60000);
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden && getTodayLocalYMD() !== fechaRender) render();
+  });
+  window.addEventListener('focus', () => {
+    if (getTodayLocalYMD() !== fechaRender) render();
+  });
+
   // Formulario de libro (crear / renombrar)
   document.getElementById('form-book').addEventListener('submit', (e) => {
     e.preventDefault();
@@ -1446,6 +1770,14 @@ function setupEventListeners() {
   // Cancelar edición de entrada
   document.getElementById('btn-cancel-entry').addEventListener('click', resetEntryForm);
 
+  // Meta semanal: cada cambio se guarda en el historial con su fecha de vigencia
+  // (spec 002, RF-1)
+  document.getElementById('meta-select').addEventListener('change', (e) => {
+    state.metas = guardarMetaSemanal(state.metas, Number(e.target.value), getTodayLocalYMD());
+    saveState();
+    render();
+  });
+
   // Búsqueda
   document.getElementById('entry-search').addEventListener('input', (e) => {
     state.searchQuery = e.target.value;
@@ -1464,8 +1796,9 @@ function setupEventListeners() {
       const payload = {
         libros: state.libros,
         entradas: state.entradas,
+        metas: state.metas,
         exportadoEn: new Date().toISOString(),
-        version: 1
+        version: 2
       };
       const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
       const url = URL.createObjectURL(blob);
@@ -1505,6 +1838,7 @@ function setupEventListeners() {
         // Reemplazar estado con copias de los datos importados
         state.libros = parsed.libros.map(l => ({ ...l }));
         state.entradas = parsed.entradas.map(x => normalizarEntrada(x));
+        state.metas = normalizarMetas(parsed.metas);
         state.selectedBookId = null;
         state.editingBookId = null;
         state.editingEntryId = null;
@@ -1529,6 +1863,7 @@ function init() {
   const loaded = loadState();
   state.libros = loaded.libros;
   state.entradas = loaded.entradas;
+  state.metas = loaded.metas;
   state.selectedBookId = null;
   state.editingBookId = null;
   state.editingEntryId = null;
@@ -1572,6 +1907,32 @@ if (typeof module !== 'undefined') {
     rangoVistaAnio,
     construirModeloSemanas,
     modeloMapa,
-    transicionMapa
+    transicionMapa,
+    // Persistencia del historial de metas (spec 002): 'normalizarMetas' es pura;
+    // 'validateImportedData' y 'loadState' se exportan para probar la carga y la
+    // importación de datos antiguos sin historial (RNF-2).
+    normalizarMetas,
+    validateImportedData,
+    loadState,
+    // Vigencia de la meta semanal (RF-1, RF-2)
+    metaVigenteDe,
+    guardarMetaSemanal,
+    metaPendiente,
+    metaSemanaActual,
+    computeDiasEstudio,
+    diasConMinutos,
+    diasEstudiadosSemana,
+    semanasAEvaluar,
+    resumenSemanas,
+    rachasDeSemanas,
+    resumenMetas,
+    fechaLogroMeta,
+    esPerfectaHoy,
+    estadoFuegoHoy,
+    diasPosiblesSemana,
+    textoMetaDias,
+    textoFaltanDias,
+    textoGuiaMeta,
+    textoTarjetaRacha
   };
 }

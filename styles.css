@@ -253,6 +253,11 @@ body {
   margin: var(--space-xs) 0;
 }
 
+/* Tarjetas con texto largo («4 · racha 3 · récord 6»): escalan para caber en 320 px */
+.stat-value-compact {
+  font-size: clamp(1.05rem, 5vw, var(--font-size-xl));
+}
+
 .stat-hint {
   font-size: 0.8125rem;
   color: var(--muted);
@@ -303,7 +308,10 @@ body {
 
 .week-fire {
   text-align: center;
-  font-size: 1.4rem;
+  /* Escala con el ancho para que quepa «🔥 Racha de metas semanales activa»
+     desde 320 px (RNF-3) */
+  font-size: clamp(1rem, 4.5vw, 1.4rem);
+  line-height: 1.3;
   font-weight: 700;
   color: var(--fire);
   margin-bottom: var(--space-xs);
@@ -1041,6 +1049,21 @@ body {
   display: flex;
   gap: var(--space-sm);
   flex-wrap: wrap;
+}
+
+/* Meta semanal en Ajustes (spec 002, RF-1) */
+.settings-block {
+  margin-bottom: var(--space-lg);
+}
+
+.settings-meta {
+  display: grid;
+  gap: var(--space-xs);
+  max-width: 20rem;
+}
+
+.settings-meta .settings-text {
+  margin: 0;
 }
 
 /* ===== Toast ===== */

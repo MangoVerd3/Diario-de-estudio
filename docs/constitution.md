@@ -8,7 +8,9 @@
 3. **Lógica separada de la interfaz**: racha, semana y días estudiados son funciones
    puras sobre los datos; el DOM solo se toca al renderizar o en listeners.
 4. **Pruebas sin instalar nada**: se verifica en el navegador, a mano o con
-   Chrome DevTools si el usuario lo aprueba. Ningún framework de test.
+   Chrome DevTools si el usuario lo aprueba. Ningún framework de test. La
+   lógica pura podrá verificarse además con el runner integrado de Node
+   (`node --test`), sin instalar nada.
 5. **Los datos del usuario no se tocan**: todo vive en `localStorage` y es
    exportable; ante datos antiguos o corruptos, normalizar, nunca perder.
 6. **En español**: interfaz, comentarios y docs en español;

@@ -9,7 +9,7 @@ cada uno y una racha de días consecutivos.
   en `docs/`, las especificaciones en `specs/` y los tests de lógica pura
   (`node --test`, sin instalar nada) en `tests/`.
 - Guarda todo en `localStorage` con la clave `diarioEstudio`.
-- Datos: `{ libros: [{id, nombre, color}], entradas: [{id, libroId, titulo, contenido, fecha, minutos, sesiones}] }`.
+- Datos: `{ libros: [{id, nombre, color}], entradas: [{id, libroId, titulo, contenido, fecha, minutos, sesiones}], metas: [{dias, desde}] }`.
   La fecha es un texto `"YYYY-MM-DD"` en hora local. `minutos` es el total de tiempo de
   estudio de la entrada. `sesiones` es un array `[{fecha, minutos}]` agrupado por fecha
   (al seguir estudiando se suma a la sesión de ese día). La `fecha` visible es la de la
@@ -17,6 +17,8 @@ cada uno y una racha de días consecutivos.
   la fecha de la entrada (corregir no marca el día de hoy). No hay campo de fecha en
   el formulario: toda sesión nueva se registra con la fecha local de hoy (`getTodayLocalYMD()`).
   Racha, días estudiados y minutos/semana se calculan desde `sesiones`.
+  `metas` es el historial de metas semanales (spec 002): `dias` (1 a 7) y `desde`, el
+  lunes desde el que rige cada cambio. Se exporta e importa con el resto de los datos.
 - Usa `textContent` en vez de `innerHTML` para mostrar texto del usuario.
 - Manten actualizado @MEMORY.md.
 
@@ -27,8 +29,9 @@ cada uno y una racha de días consecutivos.
   verde bambú (#15803d), entradas como notas adhesivas con cinta del color del libro.
   Mobile-first con barra de navegación inferior (Hoy / Libros / Ajustes);
   en desktop son pestañas bajo el título.
-- Las estadísticas (racha actual, racha más larga, minutos/semana, días estudiados)
-  van en un carrusel: swipe o pulsación sostenida para avanzar, puntos y teclado.
+- Las estadísticas (racha actual, racha más larga, minutos/semana, días estudiados,
+  metas semanales y semanas perfectas) van en un carrusel: swipe o pulsación sostenida
+  para avanzar, puntos y teclado.
 - La pestaña Hoy termina con un mapa de calor de días estudiados
   (spec completa en `specs/001-heat-map/spec.md`): vista «Actual» (12 semanas en
   móvil, 53 en escritorio, botón «Ver más semanas») y selector de años pasados;
@@ -45,8 +48,29 @@ cada uno y una racha de días consecutivos.
 - Racha actual: días seguidos que terminan hoy. Si hoy no hay sesión, la racha actual es 0.
 - Calcúlala siempre desde las fechas de las entradas.
 - La tira de la semana muestra lunes a domingo de la semana en curso (los días
-  futuros se ven atenuados). El fuego 🔥 de "semana perfecta" aparece cuando todos
-  los días de lunes a hoy tienen sesión, y desaparece si se rompe.
+  futuros se ven atenuados). Su marcado usa cualquier sesión, con minutos o sin ellos.
+
+## Metas y rachas semanales (spec 002)
+- Spec completa: `specs/002-better-streak/spec.md`. Sustituye al fuego de «semana
+  perfecta» de lunes a hoy y al texto «Estudia cada día de lunes a hoy para encender
+  el fuego».
+- La meta semanal se elige en Ajustes (1 a 7) y se guarda en el historial `metas` con
+  el lunes desde el que rige. La primera meta configurada rige desde el lunes de la
+  semana en curso; cada cambio posterior, desde el lunes siguiente (sustituye al
+  pendiente). Elegir la meta ya vigente borra el pendiente y no deja aviso. Sin
+  historial, o antes de la primera meta, la meta vigente es 3.
+- El fuego 🔥 único de la zona de la tira muestra, por este orden:
+  1. «🔥 ¡Semana perfecta!» si hoy es domingo y los 7 días de la semana están estudiados.
+  2. «🔥 ¡Meta semanal alcanzada!» si hoy es el día estudiado nº N de la semana
+     (N = meta vigente), contando por la fecha de las sesiones.
+  3. «🔥 Racha de metas semanales activa» si la racha de metas es mayor que 0.
+- Bajo la tira hay un texto de guía sobre la meta con los 6 casos de la spec.
+- Semana cerrada: la anterior a la semana en curso. Totales, rachas y récords de metas
+  y de semanas perfectas se calculan solo sobre semanas cerradas; la semana en curso no
+  suma hasta cerrar. Una semana cerrada que no cuenta (incluida una sin entradas) pone
+  la racha a 0 y el récord se conserva.
+- Se recalculan al registrar, editar, corregir o eliminar una entrada, al importar y al
+  cambiar de semana con la app abierta.
 
 ## Semana
 - La semana va de lunes a domingo. "Minutos esta semana" suma los `minutos` de
@@ -55,6 +79,9 @@ cada uno y una racha de días consecutivos.
 ## Días estudiados
 - Días únicos (en cualquier libro) con al menos una entrada, total histórico.
 - No cuentan las fechas futuras. Calcúlalo siempre desde las entradas.
+- Ese contador y la racha diaria usan esta definición (basta una sesión, con minutos
+  o sin ellos). Para las metas y rachas semanales de la spec 002, «día estudiado»
+  exige además más de 0 minutos: un día cuya única sesión es de 0 minutos no cuenta allí.
 
 ## Cómo trabajar
 - Pregunta siempre si deberias usar el MCP de Chrome DevTools para probar cambios. si se acepta su uso; prueba la funcionalidad implementada, revisa la consola y comprueba la vista móvil.
