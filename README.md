@@ -48,11 +48,11 @@ El proyecto se desarrolla con **Spec-Driven Development**: cada funcionalidad na
 
 ## 🗺️ Estado
 
-- [x] Registro de entradas, racha diaria y estadísticas
-- [x] Mapa de calor
-- [x] Metas semanales y rachas semanales
-- [ ] Mejorar estetica del apartado de libros
-
+- [x] Registro de entradas, racha diaria y estadísticas.
+- [x] Mapa de calor.
+- [x] Metas semanales y rachas semanales.
+- [ ] Mejorar estetica del apartado de libros.
+- [ ] Agregar animación en swipes.
 ## 📄 Licencia
 
 [MIT](LICENSE) · Hecho por Hector J.T.M.
