@@ -51,7 +51,7 @@ El proyecto se desarrolla con **Spec-Driven Development**: cada funcionalidad na
 - [x] Registro de entradas, racha diaria y estadísticas.
 - [x] Mapa de calor.
 - [x] Metas semanales y rachas semanales.
-- [ ] Mejorar estetica del apartado de libros.
+- [x] Mejorar estetica del apartado de libros.
 - [ ] Agregar animación en swipes.
 ## 📄 Licencia
 
