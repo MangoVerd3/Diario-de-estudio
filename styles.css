@@ -607,39 +607,127 @@ body {
   box-shadow: 0 0 0 2px white inset;
 }
 
-/* ===== Lista de libros ===== */
-.books-list {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-xs);
+/* ===== Rejilla de fichas (spec 003, RF-1 a RF-4, RNF-8) ===== */
+/* Estante: 1 columna en móvil, 2 desde 640 px, 3 desde 1020 px. */
+.books-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-sm);
+  min-width: 0;
 }
 
-.book-item {
+@media (min-width: 640px) {
+  .books-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (min-width: 1020px) {
+  .books-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+/* Ficha: botón con icono-libro CSS, nombre y «N entradas · M min». */
+.ficha {
   display: flex;
   align-items: center;
   gap: var(--space-sm);
+  min-width: 0;
+  width: 100%;
   padding: var(--space-sm) var(--space-md);
-  background: var(--surface);
+  background: #fffdf0;
   border: 1px solid var(--line);
   border-radius: var(--radius-md);
+  box-shadow: var(--shadow-paper);
   cursor: pointer;
   text-align: left;
-  width: 100%;
   font-family: var(--font-sans);
   font-size: var(--font-size-sm);
-  box-shadow: var(--shadow-paper);
+  /* Respuesta a puntero fino: 120 ms, elevación máxima de 1 px (RNF-5) */
+  transition: transform 120ms ease, box-shadow 120ms ease, border-color 120ms ease;
 }
 
-.book-item:hover,
-.book-item:focus-visible {
+.ficha:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 2px 4px rgba(28, 25, 23, 0.16);
+}
+
+.ficha:active {
+  transform: translateY(0);
+}
+
+.ficha:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
 
-.book-item.selected {
+.ficha.abierta {
   background: var(--accent-soft);
   border-color: var(--accent);
+}
+
+/* Icono-libro dibujado con CSS (RF-2, D-7): cubierta del color del libro,
+   lomo a la izquierda, cinta translúcida y la inicial en tinta de contraste.
+   Decorativo: aria-hidden, nunca sustituye al nombre. */
+.ficha-icon {
+  position: relative;
+  flex-shrink: 0;
+  width: 44px;
+  height: 56px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--libro-color, var(--accent));
+  border-radius: 2px 6px 6px 2px;
+  box-shadow: inset 4px 0 0 rgba(0, 0, 0, 0.18), 0 1px 2px rgba(28, 25, 23, 0.2);
+  /* Cinta y realce al abrir: 200 ms (RNF-5) */
+  transition: transform 200ms ease;
+  overflow: hidden;
+}
+
+.ficha-icon::after {
+  content: '';
+  position: absolute;
+  top: 8px;
+  left: -6px;
+  right: -6px;
+  height: 12px;
+  background: rgba(255, 255, 255, 0.35);
+  transform: rotate(-4deg);
+}
+
+.ficha.abierta .ficha-icon {
+  transform: rotate(-2deg) scale(1.03);
+}
+
+.ficha-inicial {
+  font-family: var(--font-serif);
+  font-size: 1.5rem;
+  font-weight: 700;
+  line-height: 1;
+  color: var(--libro-tinta, #1c1917);
+}
+
+.ficha-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+
+.ficha-nombre {
   font-weight: 600;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ficha-meta {
+  font-size: 0.75rem;
+  color: var(--muted);
 }
 
 .book-color-dot {
@@ -650,7 +738,130 @@ body {
   flex-shrink: 0;
 }
 
-.book-item-info {
+/* Panel inline (RF-4 a RF-6): ocupa el ancho completo del contenedor justo
+   bajo la fila de su ficha, sin celdas vacías ni reordenar libros. */
+.ficha-panel {
+  grid-column: 1 / -1;
+  min-width: 0;
+  background: var(--surface);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-lg);
+  padding: var(--space-md);
+  box-shadow: var(--shadow-paper);
+}
+
+/* Desplegar 220 ms / plegar 180 ms (RNF-5): una sola animación por acción. */
+.ficha-panel.is-opening {
+  animation: ficha-open 220ms ease-out;
+}
+
+.ficha-panel.is-closing {
+  animation: ficha-close 180ms ease-in;
+}
+
+@keyframes ficha-open {
+  from {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes ficha-close {
+  from {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+}
+
+/* Tabs Entradas / Fuentes / Editar (RF-5, RNF-7). */
+.ficha-tabs {
+  display: flex;
+  gap: var(--space-xs);
+  border-bottom: 2px solid var(--line);
+  margin-bottom: var(--space-md);
+}
+
+.ficha-tab {
+  flex: 1;
+  padding: var(--space-xs) var(--space-sm);
+  background: none;
+  border: none;
+  border-bottom: 3px solid transparent;
+  margin-bottom: -2px;
+  font-family: var(--font-sans);
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.ficha-tab:hover {
+  color: var(--ink);
+}
+
+.ficha-tab[aria-selected="true"] {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+
+.ficha-tab:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Cambio de opción: fundido 160 ms + 6 px (RNF-5). */
+.ficha-page.is-switching {
+  animation: ficha-switch 160ms ease-out;
+}
+
+@keyframes ficha-switch {
+  from {
+    opacity: 0;
+    transform: translateX(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+.ficha-placeholder {
+  margin: 0;
+  padding: var(--space-md);
+  text-align: center;
+  color: var(--muted);
+  font-size: var(--font-size-sm);
+}
+
+/* ===== Opción Fuentes + Editar (spec 003, T8, RF-11–RF-14) ===== */
+.fuentes-detalle {
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+  margin-bottom: var(--space-md);
+  min-width: 0;
+}
+
+/* Icono grande de la opción Fuentes (RF-11): misma construcción que la ficha */
+.fuentes-icon {
+  width: 64px;
+  height: 82px;
+  flex-shrink: 0;
+}
+
+.fuentes-icon .ficha-inicial {
+  font-size: 2.25rem;
+}
+
+.fuentes-info {
   display: flex;
   flex-direction: column;
   gap: 2px;
@@ -658,17 +869,217 @@ body {
   min-width: 0;
 }
 
-.book-item-name {
-  font-weight: 600;
+.fuentes-nombre {
+  margin: 0;
+  font-family: var(--font-serif);
+  font-size: var(--font-size-lg);
+  font-weight: 700;
   color: var(--ink);
+  overflow-wrap: break-word;
+}
+
+.fuentes-meta {
+  margin: 0;
+  font-size: var(--font-size-sm);
+  color: var(--muted);
+}
+
+.fuentes-bloque {
+  margin-bottom: var(--space-md);
+}
+
+.fuentes-bloque:last-child {
+  margin-bottom: 0;
+}
+
+.fuentes-bloque .section-title {
+  margin-bottom: var(--space-xs);
+}
+
+/* Contenido y origen como texto literal: saltos conservados, sin HTML */
+.fuentes-texto {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  color: var(--ink-soft);
+}
+
+.fuentes-vacio {
+  color: var(--muted);
+  font-style: italic;
+  margin: 0 0 var(--space-sm);
+}
+
+.fuentes-lista {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+
+.fuente-item {
+  min-width: 0;
+  padding: var(--space-sm);
+  background: #fffdf0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-paper);
+}
+
+.fuente-enlace {
+  font-weight: 600;
+  color: var(--accent);
+  overflow-wrap: break-word;
+}
+
+.fuente-enlace:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* URLs largas abreviadas visualmente, copiables (RNF-8, RNF-10) */
+.fuente-url {
+  display: block;
+  font-size: 0.75rem;
+  color: var(--muted);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  user-select: all;
 }
 
-.book-item-meta {
-  font-size: 0.75rem;
+.fuente-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  margin-bottom: var(--space-xs);
+}
+
+.fuente-titulo {
+  font-weight: 600;
+  color: var(--ink);
+  overflow-wrap: break-word;
+}
+
+.fuente-acciones {
+  display: flex;
+  gap: var(--space-xs);
+  flex-wrap: wrap;
+}
+
+.fuente-edit-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+}
+
+.fuente-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  margin-top: var(--space-md);
+  padding-top: var(--space-md);
+  border-top: 1px dashed var(--line);
+}
+
+/* Formulario de Editar (RF-13): nombre + color + 2×500 con contador */
+.editar-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  margin-bottom: var(--space-lg);
+}
+
+.form-cuenta {
+  margin: 0;
+  font-size: 0.8125rem;
   color: var(--muted);
+  text-align: right;
+}
+
+.form-aviso {
+  margin: 0 0 var(--space-sm);
+  padding: var(--space-xs) var(--space-sm);
+  background: var(--paper);
+  border: 1px dashed var(--line);
+  border-radius: var(--radius-md);
+  font-size: var(--font-size-sm);
+  color: var(--ink-soft);
+}
+
+.editar-fuentes .section-title {
+  margin-bottom: var(--space-xs);
+}
+
+.fuentes-lista-editar {
+  margin-bottom: var(--space-sm);
+}
+
+/* Zona «Eliminar libro» (RF-15/RF-16): al final de Editar, separada del resto */
+.editar-borrado {
+  margin-top: var(--space-lg);
+  padding-top: var(--space-md);
+  border-top: 2px solid var(--line);
+}
+
+.editar-borrado .section-title {
+  margin-bottom: var(--space-sm);
+}
+
+/* Confirmación inline: despliegue de 180 ms (RNF-5) */
+.delete-confirm {
+  margin-top: var(--space-sm);
+  padding: var(--space-md);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+}
+
+.delete-confirm.is-showing {
+  animation: delete-confirm-in 180ms ease-out;
+}
+
+@keyframes delete-confirm-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.delete-confirm-pregunta {
+  margin: 0 0 var(--space-xs);
+  font-weight: 700;
+}
+
+.delete-confirm-detalle {
+  margin: 0 0 var(--space-sm);
+  color: var(--ink-soft);
+}
+
+.delete-confirm .form-actions {
+  display: flex;
+  gap: var(--space-sm);
+  flex-wrap: wrap;
+}
+
+/* Salida de la ficha al confirmar el borrado: 200 ms, opacidad + 8 px (RNF-5) */
+.ficha.is-leaving {
+  opacity: 0;
+  transform: translateY(8px);
+  transition: opacity 200ms ease-out, transform 200ms ease-out;
+}
+
+.ficha-panel.is-leaving {
+  opacity: 0;
+  transform: translateY(8px);
+  transition: opacity 200ms ease-out, transform 200ms ease-out;
 }
 
 /* Estados vacíos */
@@ -689,51 +1100,9 @@ body {
   margin-bottom: 0;
 }
 
-/* ===== Vista del libro seleccionado ===== */
-.book-view-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
-  gap: var(--space-md);
-  flex-wrap: wrap;
-  padding-bottom: var(--space-md);
-  border-bottom: 2px solid var(--ink);
-  margin-bottom: var(--space-md);
-}
-
-.book-info {
-  display: flex;
-  align-items: center;
-  gap: var(--space-sm);
-  flex-wrap: wrap;
-  flex: 1;
-  min-width: 0;
-}
-
-.book-title {
-  margin: 0;
-  font-family: var(--font-serif);
-  font-size: var(--font-size-xl);
-  font-weight: 700;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  max-width: 100%;
-}
-
-.book-count {
-  font-size: var(--font-size-sm);
-  color: var(--ink-soft);
-  background: var(--surface);
-  padding: 2px var(--space-sm);
-  border-radius: var(--radius-md);
-  border: 1px solid var(--line);
-}
-
-.book-view-actions {
-  display: flex;
-  gap: var(--space-xs);
-  flex-wrap: wrap;
+/* ===== Entradas dentro de la ficha ===== */
+#btn-add-entry {
+  margin-bottom: var(--space-sm);
 }
 
 .entry-form-section {
@@ -742,6 +1111,28 @@ body {
   background: var(--surface);
   border: 1px solid var(--line);
   border-radius: var(--radius-lg);
+}
+
+/* Despliegue del formulario de entrada: 200 ms (RNF-5) */
+.entry-form-section.is-opening {
+  animation: entry-form-open 200ms ease-out;
+}
+
+@keyframes entry-form-open {
+  from {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Entrada destino del deep-link desde Hoy (RF-10): realce breve */
+.entry-card.resaltada {
+  outline: 3px solid var(--accent);
+  outline-offset: 2px;
 }
 
 .entries-header {
@@ -1159,25 +1550,6 @@ body {
   }
 }
 
-/* Móvil: cabecera del libro en columna para que no se apretujen título y botones */
-@media (max-width: 480px) {
-  .book-view-header {
-    flex-direction: column;
-  }
-
-  .book-view-actions {
-    width: 100%;
-  }
-
-  .book-view-actions .btn {
-    flex: 1;
-  }
-
-  .book-title {
-    white-space: normal;
-  }
-}
-
 /* Movimiento reducido: sin animaciones */
 @media (prefers-reduced-motion: reduce) {
   .carousel-track {
@@ -1190,5 +1562,32 @@ body {
 
   .toast.show {
     animation: none;
+  }
+
+  /* Fichas (RNF-6): todo instantáneo (0 ms) y sin transformaciones */
+  .ficha,
+  .ficha-icon {
+    transition: none;
+  }
+
+  .ficha:hover,
+  .ficha:active,
+  .ficha.abierta .ficha-icon {
+    transform: none;
+  }
+
+  .ficha-panel.is-opening,
+  .ficha-panel.is-closing,
+  .ficha-page.is-switching,
+  .entry-form-section.is-opening,
+  .delete-confirm.is-showing {
+    animation: none;
+  }
+
+  .ficha.is-leaving,
+  .ficha-panel.is-leaving {
+    opacity: 0;
+    transform: none;
+    transition: none;
   }
 }

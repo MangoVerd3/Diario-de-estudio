@@ -19,10 +19,14 @@ let state = {
   libros: [],      // [{ id, nombre, color, creadoEn }]
   entradas: [],    // [{ id, libroId, titulo, contenido, fecha, creadoEn, minutos, sesiones }]
   metas: [],       // [{ dias, desde }] historial de metas semanales (spec 002)
+  archivo: [],     // [{ libroId, archivadoEn, sesiones }] huella de estudio (spec 003)
   selectedBookId: null,
+  ficha: { abierta: null, opcion: 'entradas', confirmando: false, busqueda: '' }, // sesión (spec 003, RF-6: no persiste)
   editingBookId: null,
   editingEntryId: null,
   entryEditMode: null, // 'sumar' (seguir estudiando) | 'corregir' (reemplazar total)
+  entryFormOpen: false, // formulario de entrada desplegado (sesión, RF-8)
+  resaltarEntradaId: null, // destino del deep-link desde Hoy (sesión, RF-10)
   searchQuery: '',
   tab: 'hoy'       // pestaña activa: 'hoy' | 'libros' | 'ajustes'
 };
@@ -107,10 +111,302 @@ function getSesiones(e) {
     : [{ fecha: e.fecha, minutos: e.minutos || 0 }];
 }
 
+// --- LIBROS Y FUENTES (spec 003) ---
+// Normalización de libros y fuentes (RNF-3): ante datos antiguos o corruptos se
+// normaliza sin perder nada del usuario (P5). Funciones puras, sin DOM.
+
+// Enlace válido (RF-14): solo http:// o https://; sin esquema se completa con
+// https://; cualquier otro esquema, vacío, >500 caracteres o espacios → null.
+function normalizarUrlFuente(texto) {
+  if (typeof texto !== 'string') return null;
+  let u = texto.trim();
+  if (u === '' || u.length > 500) return null;
+  if (/\s/.test(u)) return null;
+  const minusculas = u.toLowerCase();
+  const tieneEsquema = /^[a-z][a-z0-9+.-]*:/.test(minusculas);
+  if (!tieneEsquema) {
+    u = 'https://' + u;
+  }
+  const esquema = u.toLowerCase();
+  if (!esquema.startsWith('http://') && !esquema.startsWith('https://')) return null;
+  const resto = u.slice(esquema.startsWith('https://') ? 8 : 7);
+  if (resto === '' || /\s/.test(resto)) return null;
+  return u;
+}
+
+// Fuente válida o null (solo se descarta ella, RNF-3): título 1–60 tras trim,
+// url http(s), id propio (se genera si falta).
+function normalizarFuente(f) {
+  if (!f || typeof f !== 'object') return null;
+  if (typeof f.titulo !== 'string') return null;
+  const titulo = f.titulo.trim();
+  if (titulo === '' || titulo.length > 60) return null;
+  const url = normalizarUrlFuente(f.url ?? '');
+  if (url === null) return null;
+  const id = typeof f.id === 'string' && f.id !== '' ? f.id : generateId();
+  return { id, titulo, url };
+}
+
+// Lista de fuentes válida, en orden y recortada a 20 (RF-14). Tolera no-array.
+function normalizarFuentes(valor) {
+  if (!Array.isArray(valor)) return [];
+  return valor.map(f => normalizarFuente(f)).filter(f => f !== null).slice(0, 20);
+}
+
+// Libro completo (RNF-3, RF-13, RF-14): contenido/origen ausentes → '', recorte
+// a 500; fuentes normalizadas; color fuera de paleta → primer color; sin
+// id/nombre válidos → null (el resto de libros no se pierde, P5).
+function normalizarLibro(l) {
+  if (!l || typeof l !== 'object') return null;
+  if (typeof l.id !== 'string' || typeof l.nombre !== 'string') return null;
+  return {
+    ...l,
+    contenido: typeof l.contenido === 'string' ? l.contenido.slice(0, 500) : '',
+    origen: typeof l.origen === 'string' ? l.origen.slice(0, 500) : '',
+    fuentes: normalizarFuentes(l.fuentes),
+    color: BOOK_COLORS.includes(l.color) ? l.color : BOOK_COLORS[0]
+  };
+}
+
+// Nombre único de libro (RF-7, RF-13, E1): obligatorio, ≤40, único con
+// trim().toLowerCase() excluyendo el propio libro (excluirId). Se aplica igual
+// al crear (excluirId null) y al renombrar. Pura, sin DOM.
+function validarNombreLibro(nombre, libros, excluirId) {
+  const texto = typeof nombre === 'string' ? nombre.trim() : '';
+  if (texto === '') return { ok: false, error: 'El nombre del libro es obligatorio.' };
+  if (texto.length > 40) return { ok: false, error: 'El nombre no puede superar 40 caracteres.' };
+  const clave = texto.toLowerCase();
+  const lista = Array.isArray(libros) ? libros : [];
+  for (const l of lista) {
+    if (!l || l.id === excluirId) continue;
+    if (typeof l.nombre === 'string' && l.nombre.trim().toLowerCase() === clave) {
+      return { ok: false, error: 'Ya tienes un libro con ese nombre' };
+    }
+  }
+  return { ok: true };
+}
+
+// Inicial del icono-libro (RF-2, §8.6): primer carácter distinto de espacio, en
+// mayúscula (conserva acentos y caracteres no latinos). Sin letra → ''.
+function inicialLibro(nombre) {
+  if (typeof nombre !== 'string') return '';
+  for (const ch of nombre) {
+    if (!/\s/.test(ch)) return ch.toUpperCase();
+  }
+  return '';
+}
+
+// Luminancia relativa WCAG 2.x de un hex '#rrggbb' (0..1).
+function luminanciaHex(hex) {
+  const m = /^#([0-9a-fA-F]{6})$/.exec(hex);
+  if (!m) return null;
+  const canales = [0, 2, 4].map(i => parseInt(m[1].slice(i, i + 2), 16) / 255);
+  const lin = canales.map(c => (c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4)));
+  return 0.2126 * lin[0] + 0.7152 * lin[1] + 0.0722 * lin[2];
+}
+
+// Tinta del icono sobre el color del libro (RF-2, RNF-7): oscura '#1c1917' o
+// blanca '#ffffff', la de mayor contraste (umbral de texto 4.5:1). El icono es
+// decorativo (aria-hidden) y nunca sustituye al nombre. Pura, sin DOM.
+function colorTextoLibro(colorHex) {
+  const lumFondo = luminanciaHex(colorHex);
+  if (lumFondo === null) return '#1c1917';
+  const contraste = (lum) => {
+    const claro = Math.max(lum, lumFondo);
+    const oscuro = Math.min(lum, lumFondo);
+    return (claro + 0.05) / (oscuro + 0.05);
+  };
+  const lumOscura = luminanciaHex('#1c1917');
+  const lumBlanca = luminanciaHex('#ffffff');
+  return contraste(lumOscura) >= contraste(lumBlanca) ? '#1c1917' : '#ffffff';
+}
+
+// Huella de estudio (spec 003, RF-16–RF-18, RNF-1–RNF-3): al eliminar un libro
+// se conservan solo las sesiones (fecha + minutos) de sus entradas, un registro
+// por entrada `{libroId, archivadoEn, sesiones}`, sin título ni contenido
+// (INV-3). Las métricas leen entradas + huella (INV-2, T4). Puras, sin DOM.
+
+// Agrupa sesiones por fecha sumando minutos (como normalizarEntrada): solo
+// `{fecha: string, minutos: number >= 0}`, ordenadas por fecha.
+function agruparSesionesHuella(sesiones) {
+  const porFecha = {};
+  for (const s of sesiones) {
+    if (s && typeof s.fecha === 'string' && typeof s.minutos === 'number' && s.minutos >= 0) {
+      porFecha[s.fecha] = (porFecha[s.fecha] || 0) + s.minutos;
+    }
+  }
+  return Object.keys(porFecha).sort().map(f => ({ fecha: f, minutos: porFecha[f] }));
+}
+
+// Huella válida (RNF-3): no-array → []; registros corruptos (sin libroId string
+// o sin sesiones válidas) se descartan sin perder el resto; `archivadoEn`
+// ausente → 0.
+function normalizarArchivo(valor) {
+  if (!Array.isArray(valor)) return [];
+  const huella = [];
+  for (const r of valor) {
+    if (!r || typeof r !== 'object') continue;
+    if (typeof r.libroId !== 'string') continue;
+    if (!Array.isArray(r.sesiones)) continue;
+    const sesiones = agruparSesionesHuella(r.sesiones);
+    if (sesiones.length === 0) continue;
+    const archivadoEn = (typeof r.archivadoEn === 'number' || typeof r.archivadoEn === 'string')
+      ? r.archivadoEn
+      : 0;
+    huella.push({ libroId: r.libroId, archivadoEn, sesiones });
+  }
+  return huella;
+}
+
+// Archiva un libro (RF-16, RNF-1): lo borra de lo visible junto a sus entradas
+// y añade un registro por entrada con copia de sus sesiones. Sin entradas →
+// huella intacta. No muta los arrays ni las entradas de entrada.
+function archivarLibro(libros, entradas, archivo, libroId, ahora) {
+  const listaLibros = Array.isArray(libros) ? libros : [];
+  const listaEntradas = Array.isArray(entradas) ? entradas : [];
+  const huella = Array.isArray(archivo) ? archivo : [];
+  const existe = listaLibros.some(l => l && l.id === libroId);
+  if (!existe) {
+    return { libros: [...listaLibros], entradas: [...listaEntradas], archivo: [...huella] };
+  }
+  const delLibro = listaEntradas.filter(e => e && e.libroId === libroId);
+  const nuevos = delLibro.map(e => {
+    let sesiones = agruparSesionesHuella(getSesiones(e));
+    // Entrada antigua sin sesiones válidas: una sesión con su fecha y total
+    // (igual que normalizarEntrada) para no perder la huella.
+    if (sesiones.length === 0 && e && typeof e.fecha === 'string') {
+      const min = typeof e.minutos === 'number' && e.minutos >= 0 ? e.minutos : 0;
+      sesiones = [{ fecha: e.fecha, minutos: min }];
+    }
+    return { libroId, archivadoEn: ahora, sesiones };
+  }).filter(r => r.sesiones.length > 0);
+  return {
+    libros: listaLibros.filter(l => !(l && l.id === libroId)),
+    entradas: listaEntradas.filter(e => !(e && e.libroId === libroId)),
+    archivo: [...huella, ...nuevos]
+  };
+}
+
+// Puente único de las métricas hacia entradas + huella (spec 003, RF-17,
+// §3.3): las métricas 001/002 conservan su algoritmo intacto y solo cambia de
+// dónde salen las sesiones que se les pasan. Puras, sin DOM.
+
+// Todas las sesiones válidas (activas + huella) como `{fecha, minutos}`.
+function sesionesTodas(entradas, archivo = []) {
+  const lista = [];
+  const listaEntradas = Array.isArray(entradas) ? entradas : [];
+  for (const e of listaEntradas) {
+    if (!e || typeof e !== 'object') continue;
+    for (const s of getSesiones(e)) {
+      if (s && typeof s.fecha === 'string' && typeof s.minutos === 'number' && s.minutos >= 0) {
+        lista.push({ fecha: s.fecha, minutos: s.minutos });
+      }
+    }
+  }
+  const huella = Array.isArray(archivo) ? archivo : [];
+  for (const r of huella) {
+    if (!r || !Array.isArray(r.sesiones)) continue;
+    for (const s of r.sesiones) {
+      if (s && typeof s.fecha === 'string' && typeof s.minutos === 'number' && s.minutos >= 0) {
+        lista.push({ fecha: s.fecha, minutos: s.minutos });
+      }
+    }
+  }
+  return lista;
+}
+
+// Entradas activas más una pseudo-entrada por registro de huella (con copia de
+// sus sesiones): reutiliza sin cambios getSesiones, las métricas y el mapa.
+// «Entradas de hoy», listas, búsqueda y resumenLibro NO usan esta combinación
+// (RF-18).
+function combinarParaMetricas(entradas, archivo = []) {
+  const lista = Array.isArray(entradas) ? [...entradas] : [];
+  const huella = Array.isArray(archivo) ? archivo : [];
+  huella.forEach((r, i) => {
+    if (!r || !Array.isArray(r.sesiones)) return;
+    lista.push({
+      id: 'huella:' + (typeof r.libroId === 'string' ? r.libroId : i) + ':' + (r.archivadoEn ?? i),
+      sesiones: r.sesiones.map(s => ({ ...s }))
+    });
+  });
+  return lista;
+}
+
+// Límite de fuentes por libro (RF-14, T8): con 20 el botón de añadir se
+// desactiva y se muestra un aviso. Pura, sin DOM.
+function puedeAnadirFuente(fuentes) {
+  if (!Array.isArray(fuentes)) return true;
+  return fuentes.length < 20;
+}
+
+// Detalle de la confirmación de borrado (RF-15, T9): frase que acompaña a la
+// pregunta exacta «¿Estás seguro de eliminar el libro?», con singular/plural
+// (RNF-10). Pura, sin DOM.
+function textoDetalleBorrado(numEntradas) {
+  const n = Number.isInteger(numEntradas) && numEntradas >= 0 ? numEntradas : 0;
+  if (n === 1) return 'Se eliminará 1 entrada, su contenido, su origen y sus enlaces.';
+  return `Se eliminarán ${n} entradas, su contenido, su origen y sus enlaces.`;
+}
+
+// Contador de la ficha (RF-1, RF-18): solo entradas activas; la huella no sale
+// en contadores ni en listas. Pura, sin DOM.
+function resumenLibro(libro, entradasDeLibro) {
+  const lista = Array.isArray(entradasDeLibro) ? entradasDeLibro : [];
+  return {
+    numEntradas: lista.length,
+    minutos: lista.reduce((acc, e) => acc + (e && typeof e.minutos === 'number' && e.minutos > 0 ? e.minutos : 0), 0)
+  };
+}
+
+// Máquina de estado de sesión de las fichas (spec 003, RF-4–RF-6, RF-15, §3.4):
+// `ficha = {abierta: id|null, opcion: 'entradas'|'fuentes'|'editar',
+// confirmando: bool, busqueda: string}`. Solo vive en sesión (no persiste:
+// al recargar todo empieza cerrado, RF-6). Una sola ficha abierta (D-4);
+// abrir resetea a Entradas y limpia la confirmación y la búsqueda (RF-9);
+// cambiar de opción limpia `confirmando` pero conserva la búsqueda.
+// Pura, sin DOM.
+const OPCIONES_FICHA = ['entradas', 'fuentes', 'editar'];
+
+function transicionFicha(ficha, accion) {
+  const base = ficha && typeof ficha === 'object' ? ficha : {};
+  const actual = {
+    abierta: typeof base.abierta === 'string' ? base.abierta : null,
+    opcion: OPCIONES_FICHA.includes(base.opcion) ? base.opcion : 'entradas',
+    confirmando: base.confirmando === true,
+    busqueda: typeof base.busqueda === 'string' ? base.busqueda : ''
+  };
+  const tipo = accion && typeof accion === 'object' ? accion.tipo : null;
+  switch (tipo) {
+    case 'ABRIR':
+      if (typeof accion.id !== 'string') return { ...actual };
+      return { abierta: accion.id, opcion: 'entradas', confirmando: false, busqueda: '' };
+    case 'CERRAR':
+      return { abierta: null, opcion: 'entradas', confirmando: false, busqueda: '' };
+    case 'ALTERNAR':
+      if (typeof accion.id !== 'string') return { ...actual };
+      if (actual.abierta === accion.id) {
+        return { abierta: null, opcion: 'entradas', confirmando: false, busqueda: '' };
+      }
+      return { abierta: accion.id, opcion: 'entradas', confirmando: false, busqueda: '' };
+    case 'OPCION':
+      if (!OPCIONES_FICHA.includes(accion.opcion)) return { ...actual };
+      return { ...actual, opcion: accion.opcion, confirmando: false };
+    case 'CONFIRMAR':
+      return { ...actual, confirmando: true };
+    case 'CANCELAR_CONFIRMAR':
+      return { ...actual, confirmando: false };
+    case 'BORRADA':
+      return { abierta: null, opcion: 'entradas', confirmando: false, busqueda: '' };
+    default:
+      return { ...actual };
+  }
+}
+
 // Conjunto de fechas únicas con al menos una sesión
-function getFechasEstudiadas(entradas) {
+function getFechasEstudiadas(entradas, archivo = []) {
+  const efectivas = combinarParaMetricas(entradas, archivo);
   const dateSet = new Set();
-  for (const e of entradas) {
+  for (const e of efectivas) {
     for (const s of getSesiones(e)) {
       if (s && typeof s.fecha === 'string') dateSet.add(s.fecha);
     }
@@ -295,8 +591,9 @@ function perfectaPosibleSemana(fechas, hoy) {
 
 // ¿Hay entradas en semanas anteriores a la de hoy? (RF-8, caso 2). Cuentan todas las
 // sesiones, incluso las de 0 minutos: el caso habla de entradas, no de días.
-function hayEntradasAnteriores(entradas, lunes) {
-  for (const e of entradas) {
+function hayEntradasAnteriores(entradas, lunes, archivo = []) {
+  const efectivas = combinarParaMetricas(entradas, archivo);
+  for (const e of efectivas) {
     for (const s of getSesiones(e)) {
       if (s && typeof s.fecha === 'string' && s.fecha < lunes) return true;
     }
@@ -306,8 +603,9 @@ function hayEntradasAnteriores(entradas, lunes) {
 
 // Resumen semanal (RNF-1): una sola pasada sobre las entradas alimenta la tira, la
 // guía, los fuegos y las tarjetas del carrusel.
-function resumenMetas(entradas, metas, hoy) {
-  const dias = computeDiasEstudio(entradas, hoy);
+function resumenMetas(entradas, metas, hoy, archivo = []) {
+  const efectivas = combinarParaMetricas(entradas, archivo);
+  const dias = computeDiasEstudio(efectivas, hoy);
   const fechas = diasConMinutos(dias);
   const historial = Array.isArray(metas) ? metas : [];
   const lunes = lunesDeYMD(hoy);
@@ -318,7 +616,7 @@ function resumenMetas(entradas, metas, hoy) {
   const meta = metaVigenteDe(historial, lunes);
   const diasPosibles = diasPosiblesSemana(fechas, hoy);
   const perfectaPosible = perfectaPosibleSemana(fechas, hoy);
-  const hayAnteriores = hayEntradasAnteriores(entradas, lunes);
+  const hayAnteriores = hayEntradasAnteriores(efectivas, lunes);
   const perfectaHoy = esPerfectaHoy(fechas, hoy);
   return {
     lunes,
@@ -397,24 +695,31 @@ const STORAGE_KEY = 'diarioEstudio';
 function loadState() {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return { libros: [], entradas: [], metas: [] };
+    if (!raw) return { libros: [], entradas: [], metas: [], archivo: [] };
     const parsed = JSON.parse(raw);
     if (!parsed || typeof parsed !== 'object') {
       throw new Error('Datos no válidos');
     }
-    // Validación básica de estructura (prevención de datos corruptos)
+    // Validación básica de estructura (prevención de datos corruptos).
+    // Los libros antiguos (sin contenido/origen/fuentes) se normalizan sin
+    // perder nada (spec 003, RNF-3); los inválidos sin id/nombre se descartan
+    // uno a uno sin perder el resto (P5).
     const libros = Array.isArray(parsed.libros) ? parsed.libros : [];
     const entradas = Array.isArray(parsed.entradas) ? parsed.entradas : [];
-    const librosValidos = libros.filter(l => l && typeof l.id === 'string' && typeof l.nombre === 'string' && typeof l.color === 'string' && typeof l.creadoEn === 'number');
+    const librosValidos = libros
+      .filter(l => l && typeof l.creadoEn === 'number')
+      .map(l => normalizarLibro(l))
+      .filter(l => l !== null);
     const entradasValidas = entradas
       .filter(e => e && typeof e.id === 'string' && typeof e.libroId === 'string' && typeof e.titulo === 'string' && typeof e.fecha === 'string' && typeof e.creadoEn === 'number')
       .map(e => normalizarEntrada(e));
     // El historial de metas es opcional (datos antiguos, RNF-2): se normaliza
-    // sin perder nada de lo ya guardado (P5).
-    return { libros: librosValidos, entradas: entradasValidas, metas: normalizarMetas(parsed.metas) };
+    // sin perder nada de lo ya guardado (P5). La huella inexistente equivale a
+    // huella vacía (spec 003, RNF-3).
+    return { libros: librosValidos, entradas: entradasValidas, metas: normalizarMetas(parsed.metas), archivo: normalizarArchivo(parsed.archivo) };
   } catch (err) {
     console.warn('Error al cargar datos de localStorage:', err);
-    return { libros: [], entradas: [], metas: [] };
+    return { libros: [], entradas: [], metas: [], archivo: [] };
   }
 }
 
@@ -423,7 +728,9 @@ function saveState() {
     const payload = {
       libros: state.libros,
       entradas: state.entradas,
-      metas: state.metas
+      metas: state.metas,
+      archivo: state.archivo,
+      version: 3
     };
     localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
   } catch (err) {
@@ -435,8 +742,10 @@ function saveState() {
 // Validar estructura al importar
 function validateImportedData(obj) {
   if (!obj || typeof obj !== 'object') return false;
-  // 'metas' no se valida aquí: puede faltar (datos antiguos) o venir corrupto y el
-  // archivo sigue siendo importable; se normaliza al importar (RNF-2, P5).
+  // 'metas' y 'archivo' no se validan aquí: pueden faltar (datos antiguos) o
+  // venir corruptos y el archivo sigue siendo importable; se normalizan al
+  // importar (RNF-2, RNF-3, P5). Las 'fuentes' viven dentro de cada libro y
+  // tampoco bloquean la importación: la fuente corrupta se descarta una a una.
   if (!Array.isArray(obj.libros)) return false;
   if (!Array.isArray(obj.entradas)) return false;
   const libroOk = obj.libros.every(l => l && typeof l.id === 'string' && typeof l.nombre === 'string' && typeof l.color === 'string' && typeof l.creadoEn === 'number');
@@ -444,6 +753,49 @@ function validateImportedData(obj) {
   const entradaOk = obj.entradas.every(e => e && typeof e.id === 'string' && typeof e.libroId === 'string' && typeof e.titulo === 'string' && typeof e.fecha === 'string' && typeof e.creadoEn === 'number' && (e.minutos === undefined || (typeof e.minutos === 'number' && e.minutos >= 0)) && (e.sesiones === undefined || Array.isArray(e.sesiones)));
   if (!entradaOk) return false;
   return true;
+}
+
+// Exportación version 3 (spec 003, RNF-3): incluye libros (con contenido,
+// origen y fuentes), entradas, metas y huella (archivo). Pura, sin DOM: el
+// handler solo la serializa y descarga.
+function construirExportacion(estado) {
+  const e = estado && typeof estado === 'object' ? estado : {};
+  return {
+    libros: Array.isArray(e.libros) ? e.libros.map(l => ({ ...l })) : [],
+    entradas: Array.isArray(e.entradas) ? e.entradas.map(x => ({ ...x })) : [],
+    metas: Array.isArray(e.metas) ? e.metas.map(m => ({ ...m })) : [],
+    archivo: Array.isArray(e.archivo)
+      ? e.archivo.map(r => ({
+        ...r,
+        sesiones: Array.isArray(r.sesiones) ? r.sesiones.map(s => ({ ...s })) : []
+      }))
+      : [],
+    exportadoEn: new Date().toISOString(),
+    version: 3
+  };
+}
+
+// Normaliza un JSON importado de cualquier versión (RNF-3, criterio 7): misma
+// normalización que loadState; lo antiguo sin contenido/origen/fuentes/archivo
+// queda en ''/''/[]/[] sin perder nada. La importación reemplaza todo a la
+// vez, huella incluida. Pura, sin DOM.
+function normalizarDatosImportados(parsed) {
+  if (!parsed || typeof parsed !== 'object') {
+    return { libros: [], entradas: [], metas: [], archivo: [] };
+  }
+  const libros = Array.isArray(parsed.libros) ? parsed.libros : [];
+  const entradas = Array.isArray(parsed.entradas) ? parsed.entradas : [];
+  return {
+    libros: libros
+      .filter(l => l && typeof l.creadoEn === 'number')
+      .map(l => normalizarLibro(l))
+      .filter(l => l !== null),
+    entradas: entradas
+      .filter(e => e && typeof e.id === 'string' && typeof e.libroId === 'string' && typeof e.titulo === 'string' && typeof e.fecha === 'string' && typeof e.creadoEn === 'number')
+      .map(e => normalizarEntrada(e)),
+    metas: normalizarMetas(parsed.metas),
+    archivo: normalizarArchivo(parsed.archivo)
+  };
 }
 
 // --- TOAST ---
@@ -462,8 +814,8 @@ function showToast(message) {
 // Racha actual: días consecutivos que terminan HOY (si hoy no hay sesión, es 0).
 // Racha más larga: máximo histórico de días consecutivos.
 // Ambas se calculan desde las fechas (YYYY-MM-DD, hora local) de las sesiones.
-function computeStreak(allEntradas) {
-  const dateSet = getFechasEstudiadas(allEntradas);
+function computeStreak(allEntradas, archivo = []) {
+  const dateSet = getFechasEstudiadas(allEntradas, archivo);
   if (dateSet.size === 0) {
     return { current: 0, longest: 0 };
   }
@@ -500,7 +852,7 @@ function computeStreak(allEntradas) {
 
 // --- MINUTOS DE ESTA SEMANA ---
 // Semana = lunes a domingo en curso. Suma minutos de sesiones en ese rango.
-function computeWeeklyMinutes(allEntradas) {
+function computeWeeklyMinutes(allEntradas, archivo = []) {
   const today = getTodayLocalYMD();
   const todayDate = ymdToDate(today);
   if (!todayDate) return 0;
@@ -509,7 +861,7 @@ function computeWeeklyMinutes(allEntradas) {
   const lunes = addDaysYMD(today, -offsetLunes);
   const domingo = addDaysYMD(lunes, 6);
   let total = 0;
-  for (const e of allEntradas) {
+  for (const e of combinarParaMetricas(allEntradas, archivo)) {
     for (const s of getSesiones(e)) {
       if (s && typeof s.fecha === 'string' && s.fecha >= lunes && s.fecha <= domingo) {
         total += typeof s.minutos === 'number' && s.minutos > 0 ? s.minutos : 0;
@@ -521,10 +873,10 @@ function computeWeeklyMinutes(allEntradas) {
 
 // --- DÍAS ESTUDIADOS ---
 // Días únicos con al menos una sesión, total histórico, sin fechas futuras.
-function computeStudyDays(allEntradas) {
+function computeStudyDays(allEntradas, archivo = []) {
   const today = getTodayLocalYMD();
   const daySet = new Set();
-  for (const e of allEntradas) {
+  for (const e of combinarParaMetricas(allEntradas, archivo)) {
     for (const s of getSesiones(e)) {
       if (s && typeof s.fecha === 'string' && s.fecha <= today) {
         daySet.add(s.fecha);
@@ -557,9 +909,9 @@ function nivelIntensidad(minutos) {
 
 // Minutos totales y nº de entradas por día (RF-2).
 // Las sesiones futuras o corruptas no cuentan (RF-7, constitución P5).
-function computeDiasEstudio(entradas, hoy) {
+function computeDiasEstudio(entradas, hoy, archivo = []) {
   const dias = {};
-  for (const e of entradas) {
+  for (const e of combinarParaMetricas(entradas, archivo)) {
     const diasDeLaEntrada = new Set(); // la entrada cuenta 1 vez por día
     for (const s of getSesiones(e)) {
       if (!s || typeof s.fecha !== 'string' || s.fecha > hoy) continue;
@@ -584,9 +936,9 @@ function formatoMinutos(min) {
 }
 
 // Años con al menos una sesión no futura, ordenados (selector de año, RF-5)
-function aniosConDatos(entradas, hoy) {
+function aniosConDatos(entradas, hoy, archivo = []) {
   const anios = new Set();
-  for (const e of entradas) {
+  for (const e of combinarParaMetricas(entradas, archivo)) {
     for (const s of getSesiones(e)) {
       if (s && typeof s.fecha === 'string' && s.fecha <= hoy) {
         anios.add(parseInt(s.fecha.slice(0, 4), 10));
@@ -647,8 +999,8 @@ function construirModeloSemanas(dias, hoy, fin, numColumnas, esFuera) {
 }
 
 // Orquestadora: rango y límites según la vista, y modelo completo (RF-1, RF-3, RF-4, RF-5)
-function modeloMapa(entradas, hoy, mapaState, esMovil) {
-  const dias = computeDiasEstudio(entradas, hoy);
+function modeloMapa(entradas, hoy, mapaState, esMovil, archivo = []) {
+  const dias = computeDiasEstudio(entradas, hoy, archivo);
   let columnas, totalDisponible;
   if (mapaState.vista === 'anio' && mapaState.anio) {
     const r = rangoVistaAnio(mapaState.anio, esMovil, mapaState.extra);
@@ -675,7 +1027,7 @@ function modeloMapa(entradas, hoy, mapaState, esMovil) {
     numColumnas: columnas.length,
     totalDisponible,
     hayDatosVisibles,
-    anios: aniosConDatos(entradas, hoy)
+    anios: aniosConDatos(entradas, hoy, archivo)
   };
 }
 
@@ -705,58 +1057,200 @@ function transicionMapa(mapaState, accion, contexto) {
   }
 }
 
-// --- RENDERIZADO ---
+// --- REJILLA DE FICHAS + PANEL CON TABS (spec 003, T6, RF-1–RF-6) ---
+// Una sola ficha abierta (D-4); el panel es un elemento persistente (no se
+// reconstruye: conserva foco y formularios) que se coloca dentro de la rejilla
+// justo bajo la fila de su ficha (`grid-column: 1 / -1`). El estado vive solo
+// en sesión: cambiar de pestaña lo conserva, recargar lo cierra (RF-6).
+let panelAbiertaId = null; // id con animación de apertura ya aplicada
+let panelTimer = null;      // cierre diferido para la animación de 180 ms
+
+function columnasRejilla() {
+  if (typeof window !== 'undefined' && window.matchMedia) {
+    if (window.matchMedia('(min-width: 1020px)').matches) return 3;
+    if (window.matchMedia('(min-width: 640px)').matches) return 2;
+  }
+  return 1;
+}
+
+function movimientoReducido() {
+  return typeof window !== 'undefined'
+    && window.matchMedia
+    && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+}
+
 function renderBooksList() {
   const listEl = document.getElementById('books-list');
   const emptyEl = document.getElementById('books-empty');
-  listEl.innerHTML = '';
+  const panel = document.getElementById('ficha-panel');
+  // Solo se retiran las fichas: el panel persiste (foco y formularios intactos)
+  listEl.querySelectorAll(':scope > .ficha').forEach(n => n.remove());
+  if (panel && panel.parentNode === listEl) listEl.removeChild(panel);
 
   if (state.libros.length === 0) {
     listEl.hidden = true;
     emptyEl.hidden = false;
+    if (panel) panel.hidden = true;
+    panelAbiertaId = null;
     return;
   }
   listEl.hidden = false;
   emptyEl.hidden = true;
 
-  // Ordenar por creadoEn ascendente (más antiguo primero)
+  // Orden de más antigua a más reciente (RF-1)
   const librosOrdenados = [...state.libros].sort((a, b) => a.creadoEn - b.creadoEn);
+  const botones = [];
 
   for (const libro of librosOrdenados) {
-    const count = state.entradas.filter(e => e.libroId === libro.id).length;
+    const resumen = resumenLibro(libro, state.entradas.filter(e => e.libroId === libro.id));
+    const abierta = state.ficha.abierta === libro.id;
     const btn = document.createElement('button');
     btn.type = 'button';
-    btn.className = 'book-item' + (state.selectedBookId === libro.id ? ' selected' : '');
-    btn.setAttribute('role', 'option');
-    btn.setAttribute('aria-selected', state.selectedBookId === libro.id ? 'true' : 'false');
+    btn.className = 'ficha' + (abierta ? ' abierta' : '');
     btn.dataset.bookId = libro.id;
+    btn.setAttribute('aria-expanded', abierta ? 'true' : 'false');
+    btn.setAttribute('aria-controls', 'ficha-panel');
 
-    const dot = document.createElement('span');
-    dot.className = 'book-color-dot';
-    dot.style.background = libro.color;
-    dot.setAttribute('aria-hidden', 'true');
+    const icono = document.createElement('span');
+    icono.className = 'ficha-icon';
+    icono.setAttribute('aria-hidden', 'true');
+    icono.style.setProperty('--libro-color', libro.color);
+    icono.style.setProperty('--libro-tinta', colorTextoLibro(libro.color));
+    const inicial = document.createElement('span');
+    inicial.className = 'ficha-inicial';
+    inicial.textContent = inicialLibro(libro.nombre);
+    icono.appendChild(inicial);
 
     const info = document.createElement('span');
-    info.className = 'book-item-info';
+    info.className = 'ficha-info';
+    const nombre = document.createElement('span');
+    nombre.className = 'ficha-nombre';
+    nombre.textContent = libro.nombre;
+    const meta = document.createElement('span');
+    meta.className = 'ficha-meta';
+    meta.textContent = `${resumen.numEntradas} entrada${resumen.numEntradas === 1 ? '' : 's'} · ${resumen.minutos} min`;
+    info.appendChild(nombre);
+    info.appendChild(meta);
 
-    const nameEl = document.createElement('span');
-    nameEl.className = 'book-item-name';
-    nameEl.textContent = libro.nombre;
-
-    const metaEl = document.createElement('span');
-    metaEl.className = 'book-item-meta';
-    metaEl.textContent = `${count} entrada${count === 1 ? '' : 's'}`;
-
-    info.appendChild(nameEl);
-    info.appendChild(metaEl);
-    btn.appendChild(dot);
+    btn.appendChild(icono);
     btn.appendChild(info);
-
-    btn.addEventListener('click', () => {
-      selectBook(libro.id);
-    });
+    btn.addEventListener('click', () => alternarFicha(libro.id));
     listEl.appendChild(btn);
+    botones.push(btn);
   }
+
+  // Panel a ancho completo bajo la fila de su ficha (RF-4, RNF-8)
+  const libroAbierto = state.libros.find(l => l.id === state.ficha.abierta);
+  if (!libroAbierto || !panel) {
+    // Plegar: 180 ms de salida (0 ms con movimiento reducido, RNF-5/RNF-6)
+    if (panel && !panel.hidden) {
+      if (movimientoReducido()) {
+        panel.hidden = true;
+      } else {
+        if (panelTimer) clearTimeout(panelTimer);
+        panel.classList.add('is-closing');
+        panelTimer = setTimeout(() => {
+          panel.hidden = true;
+          panel.classList.remove('is-closing');
+        }, 180);
+      }
+    }
+    panelAbiertaId = null;
+    return;
+  }
+  const cols = columnasRejilla();
+  const idx = librosOrdenados.findIndex(l => l.id === libroAbierto.id);
+  const finFila = Math.min((Math.floor(idx / cols) + 1) * cols, librosOrdenados.length);
+  if (finFila >= botones.length) {
+    listEl.appendChild(panel);
+  } else {
+    listEl.insertBefore(panel, botones[finFila]);
+  }
+  panel.setAttribute('aria-label', `Libro ${libroAbierto.nombre}`);
+  renderFichaTabs(false);
+
+  // Apertura 220 ms / cierre 180 ms; una sola animación por acción y 0 ms con
+  // movimiento reducido (RNF-5, RNF-6). El foco queda en la ficha (RNF-7).
+  if (panelTimer) {
+    clearTimeout(panelTimer);
+    panelTimer = null;
+  }
+  panel.classList.remove('is-closing');
+  if (panelAbiertaId !== libroAbierto.id || panel.hidden) {
+    panel.hidden = false;
+    if (!movimientoReducido()) {
+      panel.classList.remove('is-opening');
+      void panel.offsetWidth;
+      panel.classList.add('is-opening');
+    }
+    panelAbiertaId = libroAbierto.id;
+  }
+}
+
+// Tabs Entradas / Fuentes / Editar (RF-5, RNF-7): `tab`/`tabpanel` con
+// `aria-selected`; cambio con fundido 160 ms. `animar` solo al cambiar de
+// opción por acción del usuario, no en cada render.
+function renderFichaTabs(animar) {
+  const panel = document.getElementById('ficha-panel');
+  if (!panel) return;
+  const opciones = ['entradas', 'fuentes', 'editar'];
+  for (const op of opciones) {
+    const tab = document.getElementById('ficha-tab-' + op);
+    const page = document.getElementById('ficha-page-' + op);
+    if (!tab || !page) continue;
+    const activa = state.ficha.opcion === op;
+    tab.setAttribute('aria-selected', activa ? 'true' : 'false');
+    tab.tabIndex = activa ? 0 : -1;
+    page.hidden = !activa;
+    if (activa && animar && !movimientoReducido()) {
+      page.classList.remove('is-switching');
+      void page.offsetWidth;
+      page.classList.add('is-switching');
+    } else if (!animar) {
+      page.classList.remove('is-switching');
+    }
+  }
+}
+
+function fijarOpcionFicha(opcion) {
+  state.ficha = transicionFicha(state.ficha, { tipo: 'OPCION', opcion });
+  state.selectedBookId = state.ficha.abierta;
+  renderFichaTabs(true);
+  // Cambiar de tab limpia la confirmación de borrado (transicionFicha OPCION)
+  renderZonaBorrado();
+}
+
+function alternarFicha(libroId) {
+  state.ficha = transicionFicha(state.ficha, { tipo: 'ALTERNAR', id: libroId });
+  state.selectedBookId = state.ficha.abierta;
+  // La búsqueda es por libro y se limpia al abrir otro (RF-9); el formulario
+  // de entrada también se cierra para no arrastrar una edición a medias.
+  state.searchQuery = state.ficha.busqueda;
+  const buscador = document.getElementById('entry-search');
+  if (buscador && buscador.value !== state.searchQuery) buscador.value = state.searchQuery;
+  resetEntryForm();
+  render();
+}
+
+// Teclado de los tabs (RNF-7): flechas ←/→ e Inicio/Fin se mueven y activan.
+function setupFichaTabs() {
+  const tabs = ['entradas', 'fuentes', 'editar']
+    .map(op => document.getElementById('ficha-tab-' + op))
+    .filter(Boolean);
+  tabs.forEach((tab, i) => {
+    tab.addEventListener('click', () => fijarOpcionFicha(tab.id.replace('ficha-tab-', '')));
+    tab.addEventListener('keydown', (ev) => {
+      let j = null;
+      if (ev.key === 'ArrowRight') j = (i + 1) % tabs.length;
+      else if (ev.key === 'ArrowLeft') j = (i - 1 + tabs.length) % tabs.length;
+      else if (ev.key === 'Home') j = 0;
+      else if (ev.key === 'End') j = tabs.length - 1;
+      if (j === null) return;
+      ev.preventDefault();
+      tabs[j].focus();
+      fijarOpcionFicha(tabs[j].id.replace('ficha-tab-', ''));
+    });
+  });
 }
 
 function renderColorPalette(selectedColor) {
@@ -789,39 +1283,54 @@ function renderColorPalette(selectedColor) {
 }
 
 function renderBookView() {
-  const viewEmpty = document.getElementById('book-view-empty');
-  const viewBook = document.getElementById('book-view');
-
-  if (!state.selectedBookId) {
-    viewEmpty.hidden = false;
-    viewBook.hidden = true;
-    return;
+  // La vista de detalle separada se eliminó en T6: el panel de la ficha
+  // abierta muestra las entradas (T7), fuentes (T8) y edición (T8/T9).
+  // Se conserva la búsqueda del libro abierto y se pinta su lista.
+  const libro = state.libros.find(l => l.id === state.ficha.abierta);
+  if (!libro) return;
+  state.selectedBookId = libro.id;
+  const buscador = document.getElementById('entry-search');
+  if (buscador && buscador.value !== (state.searchQuery || '')) {
+    buscador.value = state.searchQuery || '';
   }
-  const libro = state.libros.find(l => l.id === state.selectedBookId);
-  if (!libro) {
-    state.selectedBookId = null;
-    viewEmpty.hidden = false;
-    viewBook.hidden = true;
-    return;
-  }
-  viewEmpty.hidden = true;
-  viewBook.hidden = false;
-
-  // Cabecera del libro
-  document.getElementById('book-color-indicator').style.background = libro.color;
-  document.getElementById('book-title-display').textContent = libro.nombre;
-  const entradasLibro = state.entradas.filter(e => e.libroId === libro.id);
-  const totalMin = entradasLibro.reduce((acc, e) => acc + (e.minutos || 0), 0);
-  document.getElementById('book-count').textContent = `${entradasLibro.length} entrada${entradasLibro.length === 1 ? '' : 's'} · ${totalMin} min en total`;
-
-  // Mantener valor de búsqueda
-  document.getElementById('entry-search').value = state.searchQuery || '';
-
+  renderEntryFormState();
   renderEntries();
+  renderFuentes();
+  renderEditarLibro();
+}
+
+// Formulario de entrada plegable (RF-8, T7): oculto por defecto; «+ Añadir
+// entrada» lo despliega (200 ms, 0 ms con movimiento reducido). Al editar
+// («Seguir estudiando» / «Corregir tiempo») se muestra siempre.
+function renderEntryFormState() {
+  const seccion = document.getElementById('entry-form-section');
+  const btn = document.getElementById('btn-add-entry');
+  if (!seccion || !btn) return;
+  const visible = state.entryFormOpen || state.editingEntryId !== null;
+  const estabaOculta = seccion.hidden;
+  seccion.hidden = !visible;
+  btn.setAttribute('aria-expanded', visible ? 'true' : 'false');
+  btn.textContent = visible ? '− Ocultar formulario' : '+ Añadir entrada';
+  if (visible && estabaOculta && !movimientoReducido()) {
+    seccion.classList.remove('is-opening');
+    void seccion.offsetWidth;
+    seccion.classList.add('is-opening');
+  } else if (!visible) {
+    seccion.classList.remove('is-opening');
+  }
+}
+
+function setEntryFormOpen(abierto, conFoco) {
+  state.entryFormOpen = abierto;
+  renderEntryFormState();
+  if (abierto && conFoco) {
+    const titulo = document.getElementById('entry-title');
+    if (titulo) titulo.focus();
+  }
 }
 
 function renderEntries() {
-  const libroId = state.selectedBookId;
+  const libroId = state.ficha ? state.ficha.abierta : state.selectedBookId;
   if (!libroId) return;
   const listEl = document.getElementById('entries-list');
   const emptyEl = document.getElementById('entries-empty');
@@ -853,6 +1362,7 @@ function renderEntries() {
     listEl.hidden = true;
     emptyEl.hidden = !!q;
     noResultsEl.hidden = !q;
+    state.resaltarEntradaId = null;
     return;
   }
   listEl.hidden = false;
@@ -862,6 +1372,8 @@ function renderEntries() {
   for (const e of entradas) {
     const card = document.createElement('article');
     card.className = 'entry-card';
+    card.dataset.entryId = e.id;
+    card.tabIndex = -1;
     card.setAttribute('aria-label', 'Entrada: ' + e.titulo);
     // Cinta adhesiva del color del libro (hex con transparencia)
     if (libro && typeof libro.color === 'string') {
@@ -917,16 +1429,566 @@ function renderEntries() {
     card.appendChild(actions);
     listEl.appendChild(card);
   }
+
+  // Destino del deep-link desde Hoy (RF-10): deja la entrada visible con un
+  // realce breve y el foco para teclado/lector. Solo una vez por pulsación.
+  if (state.resaltarEntradaId) {
+    const destino = listEl.querySelector(`.entry-card[data-entry-id="${state.resaltarEntradaId}"]`);
+    state.resaltarEntradaId = null;
+    if (destino) {
+      destino.classList.add('resaltada');
+      destino.scrollIntoView({ block: 'nearest' });
+      destino.focus({ preventScroll: true });
+      setTimeout(() => destino.classList.remove('resaltada'), 2000);
+    }
+  }
+}
+
+// --- FUENTES + EDITAR (spec 003, T8, RF-11–RF-14) ---
+// Opción Fuentes: muestra el libro (icono grande, nombre, entradas, minutos y
+// fecha de creación), su contenido y origen como texto literal y su lista de
+// fuentes con enlaces en pestaña nueva. Opción Editar: nombre único, color,
+// contenido/origen (2×500 con contador) y CRUD de fuentes (máx. 20), todo con
+// guardado instantáneo y `textContent` (RNF-10). Sin DOM en las validaciones.
+let editarLibroId = null;   // libro cuyos campos de Editar están sincronizados
+let editandoFuenteId = null; // fuente en edición inline (solo sesión)
+
+// Fecha de creación «12 de octubre de 2026» desde el creadoEn numérico
+function fechaCreacionLibro(creadoEn) {
+  const d = typeof creadoEn === 'number' ? new Date(creadoEn) : null;
+  return d && !Number.isNaN(d.getTime())
+    ? d.toLocaleDateString('es-ES', { day: 'numeric', month: 'long', year: 'numeric' })
+    : '';
+}
+
+// Título de fuente: obligatorio, 1–60 tras trim (RF-14). Pura, sin DOM.
+function validarTituloFuente(titulo) {
+  const t = typeof titulo === 'string' ? titulo.trim() : '';
+  if (t === '') return { ok: false, error: 'El título de la fuente es obligatorio.' };
+  if (t.length > 60) return { ok: false, error: 'El título no puede superar 60 caracteres.' };
+  return { ok: true, valor: t };
+}
+
+// Enlace de fuente: obligatorio, http(s) con autocompletado de `https://`
+// (normalizarUrlFuente); otro esquema → mensaje exacto de RF-14. Pura, sin DOM.
+function validarUrlFuente(texto) {
+  const u = typeof texto === 'string' ? texto.trim() : '';
+  if (u === '') return { ok: false, error: 'El enlace es obligatorio.' };
+  const normalizada = normalizarUrlFuente(u);
+  if (normalizada !== null) return { ok: true, valor: normalizada };
+  if (/^[a-z][a-z0-9+.-]*:/.test(u.toLowerCase())) {
+    return { ok: false, error: 'El enlace debe empezar por http:// o https://' };
+  }
+  return { ok: false, error: 'El enlace no es válido.' };
+}
+
+// Opción Fuentes (RF-11, RF-12): reconstruye la página desde el libro abierto.
+// Sin focos que conservar aquí (solo texto y enlaces), así que se pinta entera.
+function renderFuentes() {
+  const detalle = document.getElementById('fuentes-detalle');
+  const contenidoEl = document.getElementById('fuentes-contenido');
+  const origenEl = document.getElementById('fuentes-origen');
+  const vacioEl = document.getElementById('fuentes-vacio');
+  const listaEl = document.getElementById('fuentes-lista');
+  if (!detalle || !contenidoEl || !origenEl || !vacioEl || !listaEl) return;
+  const libro = state.libros.find(l => l.id === state.ficha.abierta);
+  detalle.innerHTML = '';
+  listaEl.innerHTML = '';
+  if (!libro) {
+    contenidoEl.textContent = '';
+    origenEl.textContent = '';
+    vacioEl.hidden = true;
+    return;
+  }
+  const resumen = resumenLibro(libro, state.entradas.filter(e => e.libroId === libro.id));
+
+  const icono = document.createElement('span');
+  icono.className = 'ficha-icon fuentes-icon';
+  icono.setAttribute('aria-hidden', 'true');
+  icono.style.setProperty('--libro-color', libro.color);
+  icono.style.setProperty('--libro-tinta', colorTextoLibro(libro.color));
+  const inicial = document.createElement('span');
+  inicial.className = 'ficha-inicial';
+  inicial.textContent = inicialLibro(libro.nombre);
+  icono.appendChild(inicial);
+
+  const info = document.createElement('div');
+  info.className = 'fuentes-info';
+  const nombre = document.createElement('h3');
+  nombre.className = 'fuentes-nombre';
+  nombre.textContent = libro.nombre;
+  const meta = document.createElement('p');
+  meta.className = 'fuentes-meta';
+  meta.textContent = `${resumen.numEntradas} entrada${resumen.numEntradas === 1 ? '' : 's'} · ${resumen.minutos} min`;
+  const fecha = document.createElement('p');
+  fecha.className = 'fuentes-meta';
+  const creada = fechaCreacionLibro(libro.creadoEn);
+  fecha.textContent = creada ? `Creado el ${creada}` : '';
+  info.appendChild(nombre);
+  info.appendChild(meta);
+  info.appendChild(fecha);
+  detalle.appendChild(icono);
+  detalle.appendChild(info);
+
+  // Contenido y origen como texto literal (con saltos, sin HTML, RNF-10); en
+  // vacío, mensaje en singular que invita a Editar (RF-12).
+  if (libro.contenido) {
+    contenidoEl.textContent = libro.contenido;
+    contenidoEl.classList.remove('fuentes-vacio');
+  } else {
+    contenidoEl.textContent = 'Este libro aún no tiene contenido de estudio. Añádelo desde la opción Editar.';
+    contenidoEl.classList.add('fuentes-vacio');
+  }
+  if (libro.origen) {
+    origenEl.textContent = libro.origen;
+    origenEl.classList.remove('fuentes-vacio');
+  } else {
+    origenEl.textContent = 'Este libro aún no tiene origen del contenido. Añádelo desde la opción Editar.';
+    origenEl.classList.add('fuentes-vacio');
+  }
+
+  // Fuentes: enlace en pestaña nueva con aviso al lector (RF-11); vacío en
+  // plural que invita a Editar (RF-12).
+  const fuentes = Array.isArray(libro.fuentes) ? libro.fuentes : [];
+  if (fuentes.length === 0) {
+    vacioEl.textContent = 'Este libro aún no tiene fuentes de estudio. Añádelas desde la opción Editar.';
+    vacioEl.hidden = false;
+    return;
+  }
+  vacioEl.hidden = true;
+  vacioEl.textContent = '';
+  for (const f of fuentes) {
+    const item = document.createElement('li');
+    item.className = 'fuente-item';
+    const enlace = document.createElement('a');
+    enlace.className = 'fuente-enlace';
+    enlace.href = f.url;
+    enlace.target = '_blank';
+    enlace.rel = 'noopener';
+    enlace.textContent = f.titulo;
+    const aviso = document.createElement('span');
+    aviso.className = 'sr-only';
+    aviso.textContent = ' (se abre en una pestaña nueva)';
+    enlace.appendChild(aviso);
+    const url = document.createElement('span');
+    url.className = 'fuente-url';
+    url.textContent = f.url;
+    item.appendChild(enlace);
+    item.appendChild(url);
+    listaEl.appendChild(item);
+  }
+}
+
+// Paleta de color de Editar (RF-13): se construye al abrir otro libro; el clic
+// guarda al instante (sin reconstruir: el foco se conserva).
+function construirEditarPaleta(libro) {
+  const paletteEl = document.getElementById('editar-color-palette');
+  if (!paletteEl) return;
+  paletteEl.innerHTML = '';
+  for (const color of BOOK_COLORS) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'color-option' + (libro.color === color ? ' selected' : '');
+    btn.setAttribute('role', 'radio');
+    btn.setAttribute('aria-checked', libro.color === color ? 'true' : 'false');
+    btn.setAttribute('aria-label', 'Color ' + color);
+    btn.title = color;
+    btn.style.backgroundColor = color;
+    btn.dataset.color = color;
+    btn.addEventListener('click', () => {
+      const actual = state.libros.find(l => l.id === libro.id);
+      if (!actual) return;
+      actual.color = color;
+      saveState();
+      paletteEl.querySelectorAll('.color-option').forEach(b => {
+        const esEste = b.dataset.color === color;
+        b.classList.toggle('selected', esEste);
+        b.setAttribute('aria-checked', esEste ? 'true' : 'false');
+      });
+      renderBooksList();
+      renderFuentes();
+    });
+    paletteEl.appendChild(btn);
+  }
+}
+
+// Lista de fuentes de Editar con CRUD inline (RF-14): ver, editar y quitar de
+// una en una; repetidas OK; límite 20 con botón desactivado + aviso.
+function renderEditarFuentesLista(libro) {
+  const listaEl = document.getElementById('editar-fuentes-lista');
+  const cuentaEl = document.getElementById('editar-fuentes-cuenta');
+  const avisoEl = document.getElementById('editar-fuentes-aviso');
+  const btnAnadir = document.getElementById('btn-add-fuente');
+  if (!listaEl || !cuentaEl || !avisoEl || !btnAnadir) return;
+  const fuentes = Array.isArray(libro.fuentes) ? libro.fuentes : [];
+  listaEl.innerHTML = '';
+
+  cuentaEl.textContent = `${fuentes.length} fuente${fuentes.length === 1 ? '' : 's'} de 20`;
+  const sePuede = puedeAnadirFuente(fuentes);
+  btnAnadir.disabled = !sePuede;
+  avisoEl.textContent = sePuede ? '' : 'Has llegado al máximo de 20 fuentes por libro.';
+  avisoEl.hidden = sePuede;
+
+  for (const f of fuentes) {
+    const item = document.createElement('li');
+    item.className = 'fuente-item';
+    if (editandoFuenteId === f.id) {
+      // Fila en edición: título (60) + enlace con autocompletado https://
+      const formDiv = document.createElement('div');
+      formDiv.className = 'fuente-edit-form';
+      const inputTitulo = document.createElement('input');
+      inputTitulo.type = 'text';
+      inputTitulo.className = 'form-input';
+      inputTitulo.maxLength = 60;
+      inputTitulo.value = f.titulo;
+      inputTitulo.setAttribute('aria-label', 'Título de la fuente (máx. 60 caracteres)');
+      const inputUrl = document.createElement('input');
+      inputUrl.type = 'url';
+      inputUrl.className = 'form-input';
+      inputUrl.maxLength = 500;
+      inputUrl.value = f.url;
+      inputUrl.setAttribute('aria-label', 'Enlace de la fuente (http:// o https://)');
+      const error = document.createElement('p');
+      error.className = 'error-text';
+      error.setAttribute('aria-live', 'polite');
+      const acciones = document.createElement('div');
+      acciones.className = 'fuente-acciones';
+      const btnGuardar = document.createElement('button');
+      btnGuardar.type = 'button';
+      btnGuardar.className = 'btn btn-primary btn-small';
+      btnGuardar.textContent = 'Guardar';
+      btnGuardar.dataset.accion = 'guardar-fuente';
+      btnGuardar.dataset.fuenteId = f.id;
+      const btnCancelar = document.createElement('button');
+      btnCancelar.type = 'button';
+      btnCancelar.className = 'btn btn-secondary btn-small';
+      btnCancelar.textContent = 'Cancelar';
+      btnCancelar.dataset.accion = 'cancelar-fuente';
+      acciones.appendChild(btnGuardar);
+      acciones.appendChild(btnCancelar);
+      formDiv.appendChild(inputTitulo);
+      formDiv.appendChild(inputUrl);
+      formDiv.appendChild(error);
+      formDiv.appendChild(acciones);
+      item.appendChild(formDiv);
+    } else {
+      const info = document.createElement('div');
+      info.className = 'fuente-info';
+      const titulo = document.createElement('span');
+      titulo.className = 'fuente-titulo';
+      titulo.textContent = f.titulo;
+      const url = document.createElement('span');
+      url.className = 'fuente-url';
+      url.textContent = f.url;
+      info.appendChild(titulo);
+      info.appendChild(url);
+      const acciones = document.createElement('div');
+      acciones.className = 'fuente-acciones';
+      const btnEditar = document.createElement('button');
+      btnEditar.type = 'button';
+      btnEditar.className = 'btn btn-secondary btn-small';
+      btnEditar.textContent = 'Editar';
+      btnEditar.dataset.accion = 'editar-fuente';
+      btnEditar.dataset.fuenteId = f.id;
+      const btnQuitar = document.createElement('button');
+      btnQuitar.type = 'button';
+      btnQuitar.className = 'btn btn-secondary btn-small';
+      btnQuitar.textContent = 'Quitar';
+      btnQuitar.dataset.accion = 'quitar-fuente';
+      btnQuitar.dataset.fuenteId = f.id;
+      acciones.appendChild(btnEditar);
+      acciones.appendChild(btnQuitar);
+      item.appendChild(info);
+      item.appendChild(acciones);
+    }
+    listaEl.appendChild(item);
+  }
+}
+
+// Opción Editar (RF-13, RF-14): sincroniza los campos al abrir otro libro;
+// el resto (contadores, lista de fuentes) se actualiza en cada render sin
+// tocar lo que el usuario está escribiendo. Guardado instantáneo.
+function renderEditarLibro() {
+  const libro = state.libros.find(l => l.id === state.ficha.abierta);
+  if (!libro) return;
+  const nombreInput = document.getElementById('editar-nombre');
+  const contenidoInput = document.getElementById('editar-contenido');
+  const origenInput = document.getElementById('editar-origen');
+  if (!nombreInput || !contenidoInput || !origenInput) return;
+  if (editarLibroId !== libro.id) {
+    editarLibroId = libro.id;
+    editandoFuenteId = null;
+    nombreInput.value = libro.nombre || '';
+    contenidoInput.value = libro.contenido || '';
+    origenInput.value = libro.origen || '';
+    document.getElementById('editar-nombre-error').textContent = '';
+    document.getElementById('form-add-fuente').reset();
+    limpiarErroresFuente();
+    construirEditarPaleta(libro);
+  }
+  document.getElementById('editar-contenido-cuenta').textContent =
+    `${(libro.contenido || '').length}/500 caracteres`;
+  document.getElementById('editar-origen-cuenta').textContent =
+    `${(libro.origen || '').length}/500 caracteres`;
+  renderEditarFuentesLista(libro);
+  renderZonaBorrado();
+}
+
+function limpiarErroresFuente() {
+  const tituloError = document.getElementById('fuente-titulo-error');
+  const urlError = document.getElementById('fuente-url-error');
+  if (tituloError) tituloError.textContent = '';
+  if (urlError) urlError.textContent = '';
+}
+
+// Lo escrito en Editar se guarda y se ve al instante: ficha, Fuentes y demás
+// pestañas leen el mismo `state` (RF-13, RF-19). Sin render() completo para no
+// mover el foco mientras se escribe.
+function setupEditarLibro() {
+  const nombreInput = document.getElementById('editar-nombre');
+  const contenidoInput = document.getElementById('editar-contenido');
+  const origenInput = document.getElementById('editar-origen');
+
+  nombreInput.addEventListener('input', () => {
+    const libro = state.libros.find(l => l.id === state.ficha.abierta);
+    if (!libro) return;
+    const validacion = validarNombreLibro(nombreInput.value, state.libros, libro.id);
+    if (!validacion.ok) {
+      document.getElementById('editar-nombre-error').textContent = validacion.error;
+      return;
+    }
+    document.getElementById('editar-nombre-error').textContent = '';
+    libro.nombre = nombreInput.value.trim();
+    saveState();
+    renderBooksList();
+    renderFuentes();
+  });
+
+  contenidoInput.addEventListener('input', () => {
+    const libro = state.libros.find(l => l.id === state.ficha.abierta);
+    if (!libro) return;
+    libro.contenido = contenidoInput.value.slice(0, 500);
+    saveState();
+    document.getElementById('editar-contenido-cuenta').textContent =
+      `${libro.contenido.length}/500 caracteres`;
+    renderFuentes();
+  });
+
+  origenInput.addEventListener('input', () => {
+    const libro = state.libros.find(l => l.id === state.ficha.abierta);
+    if (!libro) return;
+    libro.origen = origenInput.value.slice(0, 500);
+    saveState();
+    document.getElementById('editar-origen-cuenta').textContent =
+      `${libro.origen.length}/500 caracteres`;
+    renderFuentes();
+  });
+
+  // Añadir fuente: título (60) + enlace con autocompletado https://;
+  // repetidas OK; al llegar a 20 el botón se desactiva (RF-14).
+  document.getElementById('form-add-fuente').addEventListener('submit', (e) => {
+    e.preventDefault();
+    const libro = state.libros.find(l => l.id === state.ficha.abierta);
+    if (!libro) return;
+    if (!Array.isArray(libro.fuentes)) libro.fuentes = [];
+    if (!puedeAnadirFuente(libro.fuentes)) return;
+    limpiarErroresFuente();
+    const tituloInput = document.getElementById('fuente-titulo');
+    const urlInput = document.getElementById('fuente-url');
+    const validacionTitulo = validarTituloFuente(tituloInput.value);
+    if (!validacionTitulo.ok) {
+      document.getElementById('fuente-titulo-error').textContent = validacionTitulo.error;
+      tituloInput.focus();
+      return;
+    }
+    const validacionUrl = validarUrlFuente(urlInput.value);
+    if (!validacionUrl.ok) {
+      document.getElementById('fuente-url-error').textContent = validacionUrl.error;
+      urlInput.focus();
+      return;
+    }
+    libro.fuentes.push({ id: generateId(), titulo: validacionTitulo.valor, url: validacionUrl.valor });
+    saveState();
+    document.getElementById('form-add-fuente').reset();
+    renderEditarFuentesLista(libro);
+    renderFuentes();
+    tituloInput.focus();
+  });
+
+  // CRUD de la lista: editar / guardar / cancelar / quitar (delegación).
+  const listaEl = document.getElementById('editar-fuentes-lista');
+  listaEl.addEventListener('click', (ev) => {
+    const btn = ev.target.closest('button[data-accion]');
+    if (!btn) return;
+    const libro = state.libros.find(l => l.id === state.ficha.abierta);
+    if (!libro || !Array.isArray(libro.fuentes)) return;
+    const accion = btn.dataset.accion;
+    const fuenteId = btn.dataset.fuenteId;
+    if (accion === 'editar-fuente') {
+      editandoFuenteId = fuenteId;
+      renderEditarFuentesLista(libro);
+      const fila = listaEl.querySelector('.fuente-edit-form input');
+      if (fila) fila.focus();
+    } else if (accion === 'cancelar-fuente') {
+      editandoFuenteId = null;
+      renderEditarFuentesLista(libro);
+    } else if (accion === 'guardar-fuente') {
+      const fila = btn.closest('.fuente-edit-form');
+      const inputTitulo = fila.querySelectorAll('input')[0];
+      const inputUrl = fila.querySelectorAll('input')[1];
+      const error = fila.querySelector('.error-text');
+      const validacionTitulo = validarTituloFuente(inputTitulo.value);
+      if (!validacionTitulo.ok) {
+        error.textContent = validacionTitulo.error;
+        inputTitulo.focus();
+        return;
+      }
+      const validacionUrl = validarUrlFuente(inputUrl.value);
+      if (!validacionUrl.ok) {
+        error.textContent = validacionUrl.error;
+        inputUrl.focus();
+        return;
+      }
+      const fuente = libro.fuentes.find(f => f.id === fuenteId);
+      if (fuente) {
+        fuente.titulo = validacionTitulo.valor;
+        fuente.url = validacionUrl.valor;
+      }
+      editandoFuenteId = null;
+      saveState();
+      renderEditarFuentesLista(libro);
+      renderFuentes();
+    } else if (accion === 'quitar-fuente') {
+      libro.fuentes = libro.fuentes.filter(f => f.id !== fuenteId);
+      if (editandoFuenteId === fuenteId) editandoFuenteId = null;
+      saveState();
+      renderEditarFuentesLista(libro);
+      renderFuentes();
+      document.getElementById('fuente-titulo').focus();
+    }
+  });
+
+  // `Escape` cancela la edición inline de la fuente (como en RF-15).
+  listaEl.addEventListener('keydown', (ev) => {
+    if (ev.key !== 'Escape' || editandoFuenteId === null) return;
+    const libro = state.libros.find(l => l.id === state.ficha.abierta);
+    editandoFuenteId = null;
+    if (libro) renderEditarFuentesLista(libro);
+  });
+}
+
+// --- ELIMINAR LIBRO (spec 003, T9, RF-15/RF-16) ---
+// «Eliminar libro» al final de Editar, separado visualmente: confirmación en
+// la propia ficha con la frase exacta «¿Estás seguro de eliminar el libro?»,
+// el detalle (N entradas, contenido, origen, enlaces) y «Sí, eliminar» /
+// «Cancelar» (180 ms; `Escape` cancela y devuelve el foco). Al confirmar:
+// archivarLibro → huella, salida de 200 ms, aviso «Libro eliminado.» y foco
+// a la ficha siguiente/anterior o al estado vacío. Las métricas no se mueven
+// (RF-17: leen entradas + huella).
+function renderZonaBorrado() {
+  const zona = document.getElementById('delete-confirm');
+  const btnEliminar = document.getElementById('btn-delete-book');
+  const detalle = document.getElementById('delete-confirm-detalle');
+  if (!zona || !btnEliminar || !detalle) return;
+  const libro = state.libros.find(l => l.id === state.ficha.abierta);
+  const confirmando = state.ficha.confirmando === true
+    && Boolean(libro)
+    && state.ficha.opcion === 'editar';
+  if (libro) {
+    const num = state.entradas.filter(e => e.libroId === libro.id).length;
+    detalle.textContent = textoDetalleBorrado(num);
+  }
+  const estabaOculta = zona.hidden;
+  zona.hidden = !confirmando;
+  if (confirmando && estabaOculta && !movimientoReducido()) {
+    zona.classList.remove('is-showing');
+    void zona.offsetWidth;
+    zona.classList.add('is-showing');
+  } else if (!confirmando) {
+    zona.classList.remove('is-showing');
+  }
+}
+
+function mostrarConfirmacionBorrado() {
+  if (!state.libros.some(l => l.id === state.ficha.abierta)) return;
+  state.ficha = transicionFicha(state.ficha, { tipo: 'CONFIRMAR' });
+  renderZonaBorrado();
+  const btnSi = document.getElementById('btn-confirm-delete-book');
+  if (btnSi) btnSi.focus();
+}
+
+function cancelarConfirmacionBorrado() {
+  if (state.ficha.confirmando !== true) return;
+  state.ficha = transicionFicha(state.ficha, { tipo: 'CANCELAR_CONFIRMAR' });
+  renderZonaBorrado();
+  const btn = document.getElementById('btn-delete-book');
+  if (btn) btn.focus();
+}
+
+function confirmarBorradoLibro() {
+  const libroId = state.ficha.abierta;
+  const libro = state.libros.find(l => l.id === libroId);
+  if (!libro) return;
+  // Foco tras borrar: ficha siguiente, si no la anterior, si no el vacío (RF-16)
+  const ordenados = [...state.libros].sort((a, b) => a.creadoEn - b.creadoEn);
+  const idx = ordenados.findIndex(l => l.id === libroId);
+  const vecino = ordenados[idx + 1] || ordenados[idx - 1] || null;
+
+  const borrar = () => {
+    const res = archivarLibro(state.libros, state.entradas, state.archivo || [], libroId, Date.now());
+    state.libros = res.libros;
+    state.entradas = res.entradas;
+    state.archivo = res.archivo;
+    state.ficha = transicionFicha(state.ficha, { tipo: 'BORRADA' });
+    state.selectedBookId = null;
+    editarLibroId = null;
+    editandoFuenteId = null;
+    const panel = document.getElementById('ficha-panel');
+    if (panel) panel.classList.remove('is-leaving');
+    saveState();
+    render();
+    showToast('Libro eliminado.');
+    if (vecino) {
+      const btn = document.querySelector(`.ficha[data-book-id="${vecino.id}"]`);
+      if (btn) { btn.focus(); return; }
+    }
+    const vacio = document.getElementById('btn-create-first-book');
+    if (vacio) vacio.focus();
+  };
+
+  // Salida de 200 ms (opacidad + 8 px, RNF-5); instantánea con
+  // movimiento reducido (RNF-6)
+  if (movimientoReducido()) { borrar(); return; }
+  const listEl = document.getElementById('books-list');
+  const fichaBtn = listEl ? listEl.querySelector(`.ficha[data-book-id="${libroId}"]`) : null;
+  const panel = document.getElementById('ficha-panel');
+  if (fichaBtn) fichaBtn.classList.add('is-leaving');
+  if (panel) panel.classList.add('is-leaving');
+  setTimeout(borrar, 200);
+}
+
+function setupBorradoLibro() {
+  document.getElementById('btn-delete-book').addEventListener('click', mostrarConfirmacionBorrado);
+  document.getElementById('btn-cancel-delete-book').addEventListener('click', cancelarConfirmacionBorrado);
+  document.getElementById('btn-confirm-delete-book').addEventListener('click', confirmarBorradoLibro);
+  // `Escape` cancela la confirmación y devuelve el foco a «Eliminar libro»
+  document.getElementById('ficha-page-editar').addEventListener('keydown', (ev) => {
+    if (ev.key !== 'Escape' || state.ficha.confirmando !== true) return;
+    ev.preventDefault();
+    cancelarConfirmacionBorrado();
+  });
 }
 
 // Valores de las tarjetas del carrusel
 // 'resumen' es el resumen de metas semanales (spec 002): lo calcula render() una vez.
-function renderStats(resumen) {
-  const res = computeStreak(state.entradas);
+// 'archivo' es la huella de estudio (spec 003): las métricas la combinan con las
+// entradas activas (RF-17); sin ella todo queda como antes.
+function renderStats(resumen, archivo = []) {
+  const res = computeStreak(state.entradas, archivo);
   document.getElementById('streak-current').textContent = String(res.current);
   document.getElementById('streak-longest').textContent = String(res.longest);
 
-  const weekMin = computeWeeklyMinutes(state.entradas);
+  const weekMin = computeWeeklyMinutes(state.entradas, archivo);
   let weekText = String(weekMin);
   if (weekMin >= 60) {
     const h = Math.floor(weekMin / 60);
@@ -934,7 +1996,7 @@ function renderStats(resumen) {
     weekText = `${weekMin} (${h}h ${m}m)`;
   }
   document.getElementById('week-minutes').textContent = weekText;
-  document.getElementById('study-days').textContent = String(computeStudyDays(state.entradas));
+  document.getElementById('study-days').textContent = String(computeStudyDays(state.entradas, archivo));
 
   // Tarjetas de metas y semanas perfectas (RF-10)
   if (resumen) {
@@ -958,7 +2020,7 @@ function renderAjustes() {
 
 // Tira de la semana actual (lunes a domingo) + fuego y texto de guía de la meta.
 // 'resumen' es el resumen de metas semanales (spec 002): lo calcula render() una vez.
-function renderWeekStrip(resumen) {
+function renderWeekStrip(resumen, archivo = []) {
   const gridEl = document.getElementById('week-grid');
   gridEl.innerHTML = '';
 
@@ -967,7 +2029,7 @@ function renderWeekStrip(resumen) {
   const offsetLunes = (todayDate.getDay() + 6) % 7;
   const lunes = addDaysYMD(today, -offsetLunes);
 
-  const dateSet = getFechasEstudiadas(state.entradas);
+  const dateSet = getFechasEstudiadas(state.entradas, archivo);
   const nombres = ['L', 'M', 'X', 'J', 'V', 'S', 'D'];
 
   for (let i = 0; i < 7; i++) {
@@ -1061,10 +2123,23 @@ function renderTodayEntries() {
     btn.appendChild(info);
 
     btn.addEventListener('click', () => {
-      if (libro) {
-        selectBook(libro.id);
-        switchTab('libros');
+      // Deep-link a la ficha (RF-10): se comprueba en el momento de pulsar;
+      // si el libro ya no existe no cambia de pestaña ni muestra error.
+      const libroVivo = state.libros.find(l => l.id === entrada.libroId);
+      if (!libroVivo) return;
+      resetEntryForm();
+      state.resaltarEntradaId = entrada.id;
+      // La búsqueda se limpia para que la entrada quede visible (RF-9, RF-10)
+      state.searchQuery = '';
+      if (state.ficha.abierta === libroVivo.id) {
+        state.ficha.busqueda = '';
+        fijarOpcionFicha('entradas');
+      } else {
+        state.ficha = transicionFicha(state.ficha, { tipo: 'ABRIR', id: libroVivo.id });
+        state.selectedBookId = state.ficha.abierta;
       }
+      switchTab('libros');
+      render();
     });
     listEl.appendChild(btn);
   }
@@ -1239,11 +2314,12 @@ function renderHeatmapDetail() {
 // Render completo del mapa (se llama desde render(): RF-9)
 function renderHeatMap() {
   const hoy = getTodayLocalYMD();
-  let modelo = modeloMapa(state.entradas, hoy, mapaState, esMovilHeatmap());
+  const archivo = state.archivo || [];
+  let modelo = modeloMapa(state.entradas, hoy, mapaState, esMovilHeatmap(), archivo);
   // Si el año visualizado se quedó sin datos, volver a «Actual» (RF-5)
   if (mapaState.vista === 'anio' && !modelo.anios.includes(mapaState.anio)) {
     mapaState = transicionMapa(mapaState, { tipo: 'VISTA_ACTUAL' }, {});
-    modelo = modeloMapa(state.entradas, hoy, mapaState, esMovilHeatmap());
+    modelo = modeloMapa(state.entradas, hoy, mapaState, esMovilHeatmap(), archivo);
   }
   mapaModelo = modelo;
   // El detalle solo sobrevive si su día sigue visible (RF-6/RF-9)
@@ -1260,7 +2336,7 @@ function renderHeatMap() {
 
   // Mensajes de vacío (RF-8)
   const msg = document.getElementById('heatmap-message');
-  if (state.entradas.length === 0) {
+  if (state.entradas.length === 0 && archivo.length === 0) {
     msg.textContent = 'Tu mapa se llenará al registrar tu primera entrada.';
     msg.hidden = false;
   } else if (!modelo.hayDatosVisibles) {
@@ -1354,16 +2430,17 @@ function setupHeatmapListeners() {
 
 // Función central: redibuja toda la interfaz a partir del estado
 function render() {
-  // Resumen semanal calculado una sola vez (spec 002, RNF-1)
-  const resumen = resumenMetas(state.entradas, state.metas, getTodayLocalYMD());
+  // Resumen semanal calculado una sola vez (spec 002, RNF-1), con la huella de
+  // estudio: todas las métricas leen entradas activas + huella (spec 003, RF-17)
+  const resumen = resumenMetas(state.entradas, state.metas, getTodayLocalYMD(), state.archivo || []);
   // Fecha usada en este render: si cambia el día con la app abierta, hay que
   // recalcular (RNF-1)
   fechaRender = getTodayLocalYMD();
   renderBooksList();
   renderBookView();
-  renderStats(resumen);
+  renderStats(resumen, state.archivo || []);
   renderAjustes();
-  renderWeekStrip(resumen);
+  renderWeekStrip(resumen, state.archivo || []);
   renderTodayEntries();
   renderHeatMap();
 }
@@ -1469,21 +2546,10 @@ function setupCarousel() {
 }
 
 // --- ACCIONES LIBROS ---
+// Seleccionar es alternar la ficha (RF-4): abre en Entradas o pliega si ya
+// estaba abierta. El foco queda en la ficha activada (RNF-7).
 function selectBook(bookId) {
-  state.selectedBookId = bookId;
-  state.editingEntryId = null;
-  state.searchQuery = '';
-  state.entryEditMode = null;
-  // Reset formulario de entrada
-  document.getElementById('form-entry').reset();
-  document.getElementById('entry-id-edit').value = '';
-  document.getElementById('entry-time').value = '25';
-  document.getElementById('entry-form-title').textContent = 'Nueva entrada';
-  document.getElementById('btn-cancel-entry').hidden = true;
-  clearEntryErrors();
-  render();
-  // Mover foco al título del libro (accesibilidad)
-  document.getElementById('book-title-display').focus();
+  alternarFicha(bookId);
 }
 
 function startNewBook() {
@@ -1535,6 +2601,8 @@ function editEntry(entryId) {
   if (!e) return;
   state.editingEntryId = entryId;
   state.entryEditMode = 'sumar';
+  state.entryFormOpen = true;
+  renderEntryFormState();
   document.getElementById('entry-id-edit').value = e.id;
   document.getElementById('entry-title').value = e.titulo;
   document.getElementById('entry-content').value = e.contenido || '';
@@ -1553,6 +2621,8 @@ function correctEntryTime(entryId) {
   if (!e) return;
   state.editingEntryId = entryId;
   state.entryEditMode = 'corregir';
+  state.entryFormOpen = true;
+  renderEntryFormState();
   document.getElementById('entry-id-edit').value = e.id;
   document.getElementById('entry-title').value = e.titulo;
   document.getElementById('entry-content').value = e.contenido || '';
@@ -1580,12 +2650,14 @@ function deleteEntry(entryId) {
 function resetEntryForm() {
   state.editingEntryId = null;
   state.entryEditMode = null;
+  state.entryFormOpen = false;
   document.getElementById('form-entry').reset();
   document.getElementById('entry-id-edit').value = '';
   document.getElementById('entry-time').value = '25';
   document.getElementById('entry-form-title').textContent = 'Nueva entrada';
   document.getElementById('btn-cancel-entry').hidden = true;
   clearEntryErrors();
+  renderEntryFormState();
 }
 
 // --- EVENT LISTENERS ---
@@ -1616,22 +2688,18 @@ function setupEventListeners() {
     e.preventDefault();
     clearBookErrors();
     const nameInput = document.getElementById('book-name');
-    const name = nameInput.value.trim();
     const paletteEl = document.getElementById('book-color-palette');
     let color = paletteEl.dataset.selectedColor;
     if (!BOOK_COLORS.includes(color)) color = BOOK_COLORS[0];
 
-    let valid = true;
-    if (name.length === 0) {
-      document.getElementById('book-name-error').textContent = 'El nombre del libro es obligatorio.';
-      valid = false;
-    } else if (name.length > 40) {
-      document.getElementById('book-name-error').textContent = 'El nombre no puede superar 40 caracteres.';
-      valid = false;
+    const editingId = document.getElementById('book-id-edit').value || null;
+    const validacion = validarNombreLibro(nameInput.value, state.libros, editingId);
+    if (!validacion.ok) {
+      document.getElementById('book-name-error').textContent = validacion.error;
+      nameInput.focus();
+      return;
     }
-    if (!valid) return;
-
-    const editingId = document.getElementById('book-id-edit').value;
+    const name = nameInput.value.trim();
     if (editingId) {
       // Renombrar / cambiar color
       const idx = state.libros.findIndex(l => l.id === editingId);
@@ -1640,56 +2708,47 @@ function setupEventListeners() {
       }
       hideBookForm();
     } else {
-      // Crear nuevo libro y seleccionarlo
+      // Crear nuevo libro y dejar su ficha abierta en Entradas (RF-7)
       const nuevo = {
         id: generateId(),
         nombre: name,
         color,
-        creadoEn: Date.now()
+        creadoEn: Date.now(),
+        contenido: '',
+        origen: '',
+        fuentes: []
       };
       state.libros.push(nuevo);
+      state.ficha = transicionFicha(state.ficha, { tipo: 'ABRIR', id: nuevo.id });
       state.selectedBookId = nuevo.id;
       state.editingEntryId = null;
+      state.entryEditMode = null;
       state.searchQuery = '';
       hideBookForm();
       resetEntryForm();
+      // Libro nuevo abierto en Entradas con el formulario listo (RF-7)
+      state.entryFormOpen = true;
     }
 
     saveState();
     render();
+    // Libro recién creado: foco en el título de la nueva entrada (RF-7)
+    if (!editingId) {
+      const tituloEntrada = document.getElementById('entry-title');
+      if (tituloEntrada) tituloEntrada.focus();
+    }
   });
 
   // Cancelar edición de libro
   document.getElementById('btn-cancel-book').addEventListener('click', hideBookForm);
 
-  // Renombrar libro desde la vista del libro
-  document.getElementById('btn-rename-book').addEventListener('click', () => {
-    if (state.selectedBookId) {
-      editBook(state.selectedBookId);
-      document.getElementById('form-book').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-    }
-  });
-
-  // Eliminar libro (con confirmación; borra también sus entradas)
-  document.getElementById('btn-delete-book').addEventListener('click', () => {
-    const libro = state.libros.find(l => l.id === state.selectedBookId);
-    if (!libro) return;
-    const count = state.entradas.filter(e => e.libroId === libro.id).length;
-    if (!confirm(`¿Eliminar el libro "${libro.nombre}"? Se eliminarán también ${count} entrada${count === 1 ? '' : 's'}. Esta acción no se puede deshacer.`)) return;
-    state.libros = state.libros.filter(l => l.id !== libro.id);
-    state.entradas = state.entradas.filter(e => e.libroId !== libro.id);
-    if (state.selectedBookId === libro.id) {
-      state.selectedBookId = null;
-      state.editingEntryId = null;
-    }
-    saveState();
-    render();
-  });
+  // Renombrar y eliminar viven en la opción Editar de cada ficha (T8/T9).
 
   // Formulario de entrada (crear / editar)
   document.getElementById('form-entry').addEventListener('submit', (e) => {
     e.preventDefault();
-    if (!state.selectedBookId) {
+    const libroActivo = state.ficha.abierta || state.selectedBookId;
+    if (!libroActivo) {
       showToast('Selecciona un libro para añadir entradas.');
       return;
     }
@@ -1751,7 +2810,7 @@ function setupEventListeners() {
     } else {
       const nuevo = {
         id: generateId(),
-        libroId: state.selectedBookId,
+        libroId: libroActivo,
         titulo: title,
         contenido: content,
         fecha: date,
@@ -1760,11 +2819,25 @@ function setupEventListeners() {
         sesiones: [{ fecha: date, minutos: minutos }]
       };
       state.entradas.push(nuevo);
-      resetEntryForm();
+      // Tras guardar, el formulario queda limpio y desplegado para la
+      // siguiente entrada, con el foco en el título (RF-7, RF-8)
+      state.editingEntryId = null;
+      state.entryEditMode = null;
+      state.entryFormOpen = true;
+      document.getElementById('form-entry').reset();
+      document.getElementById('entry-id-edit').value = '';
+      document.getElementById('entry-time').value = '25';
+      document.getElementById('entry-form-title').textContent = 'Nueva entrada';
+      document.getElementById('btn-cancel-entry').hidden = true;
+      clearEntryErrors();
     }
 
     saveState();
     render();
+    if (!editingId) {
+      const tituloNuevo = document.getElementById('entry-title');
+      if (tituloNuevo) tituloNuevo.focus();
+    }
   });
 
   // Cancelar edición de entrada
@@ -1778,28 +2851,34 @@ function setupEventListeners() {
     render();
   });
 
-  // Búsqueda
+  // Búsqueda por libro: vive en el estado de la ficha y se limpia al abrir
+  // otro libro (RF-9, transicionFicha resetea `busqueda` al abrir)
   document.getElementById('entry-search').addEventListener('input', (e) => {
     state.searchQuery = e.target.value;
+    state.ficha.busqueda = e.target.value;
     renderEntries();
   });
   document.getElementById('btn-clear-search').addEventListener('click', () => {
     state.searchQuery = '';
+    state.ficha.busqueda = '';
     document.getElementById('entry-search').value = '';
     renderEntries();
     document.getElementById('entry-search').focus();
   });
 
-  // Exportar datos a JSON
+  // «+ Añadir entrada» despliega el formulario de nueva entrada (RF-8)
+  document.getElementById('btn-add-entry').addEventListener('click', () => {
+    if (state.editingEntryId) {
+      resetEntryForm();
+      return;
+    }
+    setEntryFormOpen(!state.entryFormOpen, !state.entryFormOpen);
+  });
+
+  // Exportar datos a JSON (spec 003, RNF-3): version 3 con la huella incluida
   document.getElementById('btn-export').addEventListener('click', () => {
     try {
-      const payload = {
-        libros: state.libros,
-        entradas: state.entradas,
-        metas: state.metas,
-        exportadoEn: new Date().toISOString(),
-        version: 2
-      };
+      const payload = construirExportacion(state);
       const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
@@ -1835,14 +2914,24 @@ function setupEventListeners() {
           e.target.value = '';
           return;
         }
-        // Reemplazar estado con copias de los datos importados
-        state.libros = parsed.libros.map(l => ({ ...l }));
-        state.entradas = parsed.entradas.map(x => normalizarEntrada(x));
-        state.metas = normalizarMetas(parsed.metas);
+        // Reemplazar estado con los datos importados normalizados: libros
+        // (contenido/origen/fuentes), entradas, metas y huella a la vez
+        // (spec 003, RNF-3). Un JSON antiguo sin huella queda en huella vacía.
+        const datos = normalizarDatosImportados(parsed);
+        state.libros = datos.libros;
+        state.entradas = datos.entradas;
+        state.metas = datos.metas;
+        state.archivo = datos.archivo;
         state.selectedBookId = null;
+        state.ficha = { abierta: null, opcion: 'entradas', confirmando: false, busqueda: '' };
+        panelAbiertaId = null;
+        editarLibroId = null;
+        editandoFuenteId = null;
         state.editingBookId = null;
         state.editingEntryId = null;
         state.entryEditMode = null;
+        state.entryFormOpen = false;
+        state.resaltarEntradaId = null;
         state.searchQuery = '';
         saveState();
         render();
@@ -1864,14 +2953,25 @@ function init() {
   state.libros = loaded.libros;
   state.entradas = loaded.entradas;
   state.metas = loaded.metas;
+  state.archivo = loaded.archivo;
   state.selectedBookId = null;
+  // Las fichas empiezan cerradas al recargar (RF-6) y no se persisten
+  state.ficha = { abierta: null, opcion: 'entradas', confirmando: false, busqueda: '' };
+  panelAbiertaId = null;
+  editarLibroId = null;
+  editandoFuenteId = null;
   state.editingBookId = null;
   state.editingEntryId = null;
   state.entryEditMode = null;
+  state.entryFormOpen = false;
+  state.resaltarEntradaId = null;
   state.searchQuery = '';
   state.tab = 'hoy';
 
   setupEventListeners();
+  setupFichaTabs();
+  setupEditarLibro();
+  setupBorradoLibro();
   setupCarousel();
   setupHeatmapListeners();
 
@@ -1897,6 +2997,14 @@ if (typeof document !== 'undefined') {
 // Exportar lógica pura para tests con node --test (constitución P4)
 if (typeof module !== 'undefined') {
   module.exports = {
+    getTodayLocalYMD,
+    addDaysYMD,
+    getSesiones,
+    getFechasEstudiadas,
+    computeStreak,
+    computeWeeklyMinutes,
+    computeStudyDays,
+    hayEntradasAnteriores,
     lunesDeYMD,
     nivelIntensidad,
     computeDiasEstudio,
@@ -1914,6 +3022,10 @@ if (typeof module !== 'undefined') {
     normalizarMetas,
     validateImportedData,
     loadState,
+    // Persistencia version 3 + export/import con huella (spec 003, T5):
+    // puras, con tests en tests/libros.test.js (RNF-3, RF-19).
+    construirExportacion,
+    normalizarDatosImportados,
     // Vigencia de la meta semanal (RF-1, RF-2)
     metaVigenteDe,
     guardarMetaSemanal,
@@ -1933,6 +3045,36 @@ if (typeof module !== 'undefined') {
     textoMetaDias,
     textoFaltanDias,
     textoGuiaMeta,
-    textoTarjetaRacha
+    textoTarjetaRacha,
+    // Normalización de libros y fuentes (spec 003, T1): puras, con tests en
+    // tests/libros.test.js (RNF-3, RF-13, RF-14).
+    normalizarUrlFuente,
+    normalizarFuente,
+    normalizarFuentes,
+    normalizarLibro,
+    // Nombres únicos, icono y contraste (spec 003, T2): puras, con tests en
+    // tests/libros.test.js (RF-1, RF-2, RF-7, RF-13).
+    validarNombreLibro,
+    inicialLibro,
+    colorTextoLibro,
+    // Huella de estudio al eliminar (spec 003, T3): puras, con tests en
+    // tests/libros.test.js (RF-16, RF-17, RF-18, RNF-1, RNF-2).
+    normalizarArchivo,
+    archivarLibro,
+    // Métricas con huella (spec 003, T4): las métricas aceptan `archivo = []`
+    // y combinan entradas + huella; Hoy, listas y contadores siguen con solo
+    // activas (RF-17, RF-18, RF-19).
+    sesionesTodas,
+    combinarParaMetricas,
+    resumenLibro,
+    // Estado de fichas con tabs (spec 003, T6): máquina de sesión pura
+    // (RF-4, RF-5, RF-6, RF-15). Con tests en tests/libros.test.js.
+    transicionFicha,
+    // Límite de fuentes (spec 003, T8): pura, con tests en
+    // tests/libros.test.js (RF-14).
+    puedeAnadirFuente,
+    // Detalle de la confirmación de borrado (spec 003, T9): pura, con tests
+    // en tests/libros.test.js (RF-15).
+    textoDetalleBorrado
   };
 }

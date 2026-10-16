@@ -9,16 +9,28 @@ cada uno y una racha de días consecutivos.
   en `docs/`, las especificaciones en `specs/` y los tests de lógica pura
   (`node --test`, sin instalar nada) en `tests/`.
 - Guarda todo en `localStorage` con la clave `diarioEstudio`.
-- Datos: `{ libros: [{id, nombre, color}], entradas: [{id, libroId, titulo, contenido, fecha, minutos, sesiones}], metas: [{dias, desde}] }`.
+- Datos: `{ libros: [{id, nombre, color, creadoEn, contenido, origen, fuentes: [{id, titulo, url}]}], entradas: [{id, libroId, titulo, contenido, fecha, minutos, sesiones}], metas: [{dias, desde}], archivo: [{libroId, archivadoEn, sesiones}] }`.
   La fecha es un texto `"YYYY-MM-DD"` en hora local. `minutos` es el total de tiempo de
   estudio de la entrada. `sesiones` es un array `[{fecha, minutos}]` agrupado por fecha
   (al seguir estudiando se suma a la sesión de ese día). La `fecha` visible es la de la
   última sesión. Al corregir tiempo, `sesiones` se reemplaza por una única sesión con
   la fecha de la entrada (corregir no marca el día de hoy). No hay campo de fecha en
   el formulario: toda sesión nueva se registra con la fecha local de hoy (`getTodayLocalYMD()`).
-  Racha, días estudiados y minutos/semana se calculan desde `sesiones`.
+  Racha, días estudiados, minutos/semana, mapa y metas se calculan desde las sesiones de
+  las entradas activas **más la huella** (`archivo`).
   `metas` es el historial de metas semanales (spec 002): `dias` (1 a 7) y `desde`, el
   lunes desde el que rige cada cambio. Se exporta e importa con el resto de los datos.
+- Libro (spec 003): `contenido` y `origen` son textos opcionales (máx. 500 cada uno);
+  `fuentes` es una lista ordenada de 0 a 20 `{id, titulo (1–60), url http(s), máx. 500}`:
+  sin esquema se completa con `https://`, otro esquema se rechaza. El nombre es único
+  al crear y al renombrar (`trim().toLowerCase()`, error «Ya tienes un libro con ese nombre»).
+- Borrado con huella (spec 003): eliminar un libro borra libro, contenido, origen,
+  fuentes y entradas de todo lo visible, pero conserva sus sesiones (solo `{fecha, minutos}`,
+  un registro por entrada) en `archivo`. Racha, días, minutos/semana, mapa y metas quedan
+  idénticos; listas, búsqueda, contadores y «Entradas de hoy» usan solo entradas activas.
+  Eliminar una entrada suelta no deja huella. Confirmación inline con la frase exacta
+  «¿Estás seguro de eliminar el libro?». Persistencia `version: 3` (incluye `archivo`);
+  JSON antiguos sin `contenido`/`origen`/`fuentes`/`archivo` se normalizan sin perder nada.
 - Usa `textContent` en vez de `innerHTML` para mostrar texto del usuario.
 - Manten actualizado @MEMORY.md.
 
@@ -46,7 +58,7 @@ cada uno y una racha de días consecutivos.
 ## Racha
 - Un día cuenta si se usa la opcion de "Seguir estudiando este tema" y se guarda la entrada o si se crea una entrada nueva en un libro (en cualquier libro).
 - Racha actual: días seguidos que terminan hoy. Si hoy no hay sesión, la racha actual es 0.
-- Calcúlala siempre desde las fechas de las entradas.
+- Calcúlala siempre desde las sesiones de las entradas activas más la huella (`archivo`).
 - La tira de la semana muestra lunes a domingo de la semana en curso (los días
   futuros se ven atenuados). Su marcado usa cualquier sesión, con minutos o sin ellos.
 
@@ -78,7 +90,8 @@ cada uno y una racha de días consecutivos.
 
 ## Días estudiados
 - Días únicos (en cualquier libro) con al menos una entrada, total histórico.
-- No cuentan las fechas futuras. Calcúlalo siempre desde las entradas.
+- No cuentan las fechas futuras. Calcúlalo siempre desde las sesiones de las entradas
+  activas más la huella (`archivo`).
 - Ese contador y la racha diaria usan esta definición (basta una sesión, con minutos
   o sin ellos). Para las metas y rachas semanales de la spec 002, «día estudiado»
   exige además más de 0 minutos: un día cuya única sesión es de 0 minutos no cuenta allí.

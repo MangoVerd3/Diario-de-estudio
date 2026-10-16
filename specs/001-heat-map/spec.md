@@ -183,3 +183,12 @@ cuadrados de tono, de «Menos» a «Más», sin cifras.
 - El padding interior evita que los `outline` de hoy/selección/foco se recorten en
   los bordes del scroll. Al pulsar «Ver más semanas» el scroll se coloca al final
   para que «hoy» siga visible.
+
+**15 oct 2026 — Borrado de libros con huella (spec 003)**
+- El mapa se sigue recalculando al eliminar un libro, pero su resultado deja de
+  cambiar: las sesiones del libro eliminado permanecen en la huella de estudio
+  (`archivo`, un registro por entrada con solo fecha y minutos) y el mapa se calcula
+  sobre entradas activas más huella (spec 003 §6.2). Un día sostenido únicamente por
+  la huella sigue coloreado y contando; «Entradas de hoy», listas y búsquedas no
+  muestran ningún rastro del libro eliminado (sin títulos ni contenidos). Solo texto,
+  sin cambios de código en esta spec.
